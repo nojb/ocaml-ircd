@@ -146,29 +146,25 @@ let motd = Stringext.split motd ~on:'\n'
 let (>>=) = Lwt.(>>=)
 
 let handle_client srv (ic, oc) =
-  let rec loop () =
+  let rec loop n u =
     lwt l = Lwt_io.read_line ic in
-    match parse_message l with
-    | NICK n ->
+    match parse_message l, n, u with
+    | NICK n, _, None ->
         lwt () = assert_lwt (not (H.mem srv.users n)) in
-        Lwt.return n
+        loop (Some n) None
+    | NICK n, _, Some (u, r) ->
+        Lwt.return (n, u, r)
+    | USER (u, r), None, _ ->
+        loop None (Some (u, r))
+    | USER (u, r), Some n, _ ->
+        Lwt.return (n, u, r)
     | _ ->
-        Lwt_io.fprintf oc "451 :You have not registered\r\n" >>= loop
+        Lwt_io.fprintf oc "451 :You have not registered\r\n" >>
+        loop n u
     | exception _ ->
-        loop ()
+        loop n u
   in
-  lwt n = loop () in
-  let rec loop () =
-    lwt l = Lwt_io.read_line ic in
-    match parse_message l with
-    | USER (u, r) ->
-        Lwt.return (u, r)
-    | _ ->
-        Lwt_io.fprintf oc "451 :You have not registered\r\n" >>= loop
-    | exception _ ->
-        loop ()
-  in
-  lwt u, r = loop () in
+  lwt n, u, r = loop None None in
   let u =
     { nick = n; user = u; realname = r;
       joined = []; ic; oc; last_act = Unix.time () }
