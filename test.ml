@@ -23,6 +23,8 @@ type message =
   | PRIVMSG of [ `Channel of string | `Nick of string ] list * string
 
 exception ErroneusNickname of string
+exception NoNicknameGiven
+exception NeedMoreParams of string
 
 let nickname n =
   try
@@ -38,23 +40,29 @@ let parse_message l =
       NICK (nickname n)
   | "NICK", [] ->
       raise NoNicknameGiven
-  | "USER", [user; mode; _; realname] ->
+  | "USER", user :: mode :: _ :: realname :: _ ->
       let user = tok Lexer.user user in
       USER (user, realname)
-  | "OPER", [name; password] ->
+  | "USER", _ ->
+      raise (NeedMoreParams command)
+  | "OPER", name :: password :: _ ->
       OPER (name, password)
-  | "MODE", [nick; modes] ->
+  | "OPER", _ ->
+      raise (NeedMoreParams command)
+  | "MODE", nick :: modes :: _ ->
       MODE (nick, modes)
+  | "MODE", _ ->
+      raise (NeedMoreParams command)
   | "QUIT", [] ->
       QUIT ""
-  | "QUIT", [msg] ->
+  | "QUIT", msg :: _ ->
       QUIT msg
-  | "JOIN", ["0"] ->
+  | "JOIN", "0" :: [] ->
       PART_ALL
-  | "JOIN", [channels] ->
+  | "JOIN", channels :: [] ->
       let channels = tok Lexer.channel_list channels in
       JOIN (List.map (fun x -> (x, None)) channels)
-  | "JOIN", [channels; keys] ->
+  | "JOIN", channels :: keys :: _ ->
       let channels = tok Lexer.channel_list channels in
       let keys = tok Lexer.key_list keys in
       let rec loop cs ks =
@@ -67,10 +75,14 @@ let parse_message l =
             []
       in
       JOIN (loop channels keys)
-  | "PART", [channels] ->
+  | "JOIN", [] ->
+      raise (NeedMoreParams command)
+  | "PART", [] ->
+      raise (NeedMoreParams command)
+  | "PART", channels :: [] ->
       let channels = tok Lexer.channel_list channels in
       PART (channels, "")
-  | "PART", [channels; msg] ->
+  | "PART", channels :: msg :: _ ->
       let channels = tok Lexer.channel_list channels in
       PART (channels, msg)
   | "TOPIC", [chan] ->
