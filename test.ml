@@ -9,18 +9,18 @@ type mode =
 
 type message =
   | NICK of string
-  | USER of string * int * string
+  | USER of string * string
   | OPER of string * string
-  | MODE of string * (bool * mode) list
-  | QUIT of string option
+  | MODE of string * string
+  | QUIT of string
   | PART_ALL
-  | JOIN of (string list * string list)
-  | PART of string list * string option
-  | TOPIC of string * string option
+  | JOIN of (string * string option) list
+  | PART of string list * string
+  | TOPIC of string * string
   | NAMES of string list * string option
   | LIST of string list * string option
   | INVITE of string * string
-  | PRIVMSG of string * string
+  | PRIVMSG of [ `Channel of string | `Nick of string ] list * string
 
 let parse_message l =
   let tok lex l = lex (Lexing.from_string l) in
@@ -28,23 +28,23 @@ let parse_message l =
   match String.uppercase command, params with
   | "NICK", [n] ->
       let n = tok Lexer.nickname n in
-      `NICK n
+      NICK n
   | "USER", [user; mode; _; realname] ->
       let user = tok Lexer.user user in
-      `USER (user, realname)
+      USER (user, realname)
   | "OPER", [name; password] ->
-      `OPER (name, password)
+      OPER (name, password)
   | "MODE", [nick; modes] ->
-      `MODE (nick, modes)
+      MODE (nick, modes)
   | "QUIT", [] ->
-      `QUIT ""
+      QUIT ""
   | "QUIT", [msg] ->
-      `QUIT msg
+      QUIT msg
   | "JOIN", ["0"] ->
-      `PART_ALL
+      PART_ALL
   | "JOIN", [channels] ->
       let channels = tok Lexer.channel_list channels in
-      `JOIN (List.map (fun x -> (x, None)) channels)
+      JOIN (List.map (fun x -> (x, None)) channels)
   | "JOIN", [channels; keys] ->
       let channels = tok Lexer.channel_list channels in
       let keys = tok Lexer.key_list keys in
@@ -57,22 +57,22 @@ let parse_message l =
         | [], _ ->
             []
       in
-      `JOIN (loop channels keys)
+      JOIN (loop channels keys)
   | "PART", [channels] ->
       let channels = tok Lexer.channel_list channels in
-      `PART (channels, "")
+      PART (channels, "")
   | "PART", [channels; msg] ->
       let channels = tok Lexer.channel_list channels in
-      `PART (channels, msg)
+      PART (channels, msg)
   | "TOPIC", [chan] ->
       let chan = tok Lexer.channel chan in
-      `TOPIC (chan, "")
+      TOPIC (chan, "")
   | "TOPIC", [chan; topic] ->
       let chan = tok Lexer.channel chan in
-      `TOPIC (chan, topic)
+      TOPIC (chan, topic)
   | "PRIVMSG", [msgtarget; texttobesent] ->
       let msgtarget = tok Lexer.msgtarget msgtarget in
-      `PRIVMSG (msgtarget, texttobesent)
+      PRIVMSG (msgtarget, texttobesent)
   | _ as cmd, _ ->
       failwith ("unrecognized command : " ^ cmd)
 
@@ -124,7 +124,7 @@ let handle_client srv (ic, oc) =
   let rec loop () =
     lwt l = Lwt_io.read_line ic in
     match parse_message l with
-    | `NICK n ->
+    | NICK n ->
         lwt () = assert_lwt (not (H.mem srv.users n)) in
         Lwt.return n
     | _ ->
@@ -136,7 +136,7 @@ let handle_client srv (ic, oc) =
   let rec loop () =
     lwt l = Lwt_io.read_line ic in
     match parse_message l with
-    | `USER (u, r) ->
+    | USER (u, r) ->
         Lwt.return (u, r)
     | _ ->
         loop ()
@@ -154,7 +154,7 @@ let handle_client srv (ic, oc) =
   let rec read_message () =
     Lwt_io.read_line ic >>= fun l ->
     match parse_message l with
-    | `JOIN chans ->
+    | JOIN chans ->
         let chans = List.map (H.find srv.channels) (List.map fst chans) in
         List.iter (fun ch -> ch.members <- u :: ch.members) chans;
         Lwt_list.iter_p begin fun ch ->
@@ -162,7 +162,7 @@ let handle_client srv (ic, oc) =
             Lwt_io.fprintf u'.oc ":%s JOIN %s\r\n" u.nick ch.name
           end ch.members
         end chans
-    | `PRIVMSG (targets, msg) ->
+    | PRIVMSG (targets, msg) ->
         let send_user tgt u = Lwt_io.fprintf u.oc ":%s PRIVMSG %s :%s\r\n" u.nick tgt msg in
         let send = function
           | `Channel chan ->
@@ -181,10 +181,11 @@ let handle_client srv (ic, oc) =
     (fun _ ->
        H.remove srv.users u.nick;
        List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
-       Lwt_list.iter_p (fun ch ->
-           Lwt_list.iter_p (fun u' ->
-               Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick "Connection closed by peer") ch.members)
-         u.joined)
+       Lwt_list.iter_p begin fun ch ->
+         Lwt_list.iter_p begin fun u' ->
+           Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick "Connection closed by peer"
+         end ch.members
+       end u.joined)
 
 let server_loop srv =
   Lwt_io.establish_server
