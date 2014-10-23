@@ -118,6 +118,9 @@ type server =
   { channels : channel H.t;
     users    : user H.t }
 
+let motd = "Welcome to the Mirage IRC Server\nEnjoy!"
+let motd = Stringext.split motd ~on:'\n'
+
 let (>>=) = Lwt.(>>=)
 
 let handle_client srv (ic, oc) =
@@ -151,6 +154,9 @@ let handle_client srv (ic, oc) =
   lwt () = Lwt_io.fprintf u.oc "001 %s :Welcome to the Mirage IRC Server\r\n" u.nick in
   lwt () = Lwt_io.fprintf u.oc "002 %s :Your host is ..., running ...\r\n" u.nick in
   lwt () = Lwt_io.fprintf u.oc "003 %s :This server was created on ...\r\n" u.nick in
+  lwt () = Lwt_io.fprintf u.oc "375 :- Mirage IRC Message of the day - \r\n" in
+  lwt () = Lwt_list.iter_s (fun l -> Lwt_io.fprintf u.oc "372 :- %s\r\n" l) motd in
+  lwt () = Lwt_io.fprintf u.oc "376 :End of MOTD command\r\n" in
   let rec read_message () =
     Lwt_io.read_line ic >>= fun l ->
     match parse_message l with
