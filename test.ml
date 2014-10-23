@@ -22,13 +22,22 @@ type message =
   | INVITE of string * string
   | PRIVMSG of [ `Channel of string | `Nick of string ] list * string
 
+exception ErroneusNickname of string
+
+let nickname n =
+  try
+    Lexer.nickname (Lexing.from_string n)
+  with
+  | _ -> raise (ErroneusNickname n)
+
 let parse_message l =
   let tok lex l = lex (Lexing.from_string l) in
   let command, params = Lexer.message (Lexing.from_string l) in
   match String.uppercase command, params with
   | "NICK", [n] ->
-      let n = tok Lexer.nickname n in
-      NICK n
+      NICK (nickname n)
+  | "NICK", [] ->
+      raise NoNicknameGiven
   | "USER", [user; mode; _; realname] ->
       let user = tok Lexer.user user in
       USER (user, realname)
@@ -131,7 +140,7 @@ let handle_client srv (ic, oc) =
         lwt () = assert_lwt (not (H.mem srv.users n)) in
         Lwt.return n
     | _ ->
-        loop ()
+        Lwt_io.fprintf oc "451 :You have not registered\r\n" >>= loop
     | exception _ ->
         loop ()
   in
@@ -142,7 +151,7 @@ let handle_client srv (ic, oc) =
     | USER (u, r) ->
         Lwt.return (u, r)
     | _ ->
-        loop ()
+        Lwt_io.fprintf oc "451 :You have not registered\r\n" >>= loop
     | exception _ ->
         loop ()
   in
