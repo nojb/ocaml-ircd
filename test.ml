@@ -25,6 +25,7 @@ type message =
 exception ErroneusNickname of string
 exception NoNicknameGiven
 exception NeedMoreParams of string
+exception UnknownCommand of string
 
 let nickname n =
   try
@@ -91,11 +92,11 @@ let parse_message l =
   | "TOPIC", [chan; topic] ->
       let chan = tok Lexer.channel chan in
       TOPIC (chan, topic)
-  | "PRIVMSG", [msgtarget; texttobesent] ->
+  | "PRIVMSG", msgtarget :: texttobesent :: _ ->
       let msgtarget = tok Lexer.msgtarget msgtarget in
       PRIVMSG (msgtarget, texttobesent)
-  | _ as cmd, _ ->
-      failwith ("unrecognized command : " ^ cmd)
+  | _ ->
+      raise (UnknownCommand command)
 
 module H = Hashtbl.Make
     (struct
@@ -189,6 +190,9 @@ let handle_client srv (ic, oc) =
             Lwt_io.fprintf u'.oc ":%s JOIN %s\r\n" u.nick ch.name
           end ch.members
         end chans
+    | PRIVMSG (_, "") ->
+        Lwt_io.fprintf oc "412 :No text to send\r\n" >>=
+        read_message
     | PRIVMSG (targets, msg) ->
         let send_user tgt u = Lwt_io.fprintf u.oc ":%s PRIVMSG %s :%s\r\n" u.nick tgt msg in
         let send = function
@@ -201,6 +205,18 @@ let handle_client srv (ic, oc) =
         Lwt_list.iter_p send targets
     | _ ->
         read_message ()
+    | exception NoNicknameGiven ->
+        Lwt_io.fprintf oc "431 :No nickname given\r\n" >>=
+        read_message
+    | exception (NeedMoreParams cmd) ->
+        Lwt_io.fprintf oc "461 %s :Not enough parameters\r\n" cmd >>=
+        read_message
+    | exception (ErroneusNickname n) ->
+        Lwt_io.fprintf oc "432 %s :Erroneus nickname\r\n" n >>=
+        read_message
+    | exception (UnknownCommand cmd) ->
+        Lwt_io.fprintf oc "421 %s :Unknown command\r\n" cmd >>=
+        read_message
     | exception _ ->
         read_message ()
   in
