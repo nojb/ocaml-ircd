@@ -246,7 +246,12 @@ let handle_message s u m =
         | `Channel chan ->
             if H.mem s.channels chan then
               let ch = H.find s.channels chan in
-              Lwt_list.iter_p (fun u' -> privmsg u'.oc ~nick:u.nick ~target:chan ~msg) ch.members
+              Lwt_list.iter_p begin fun u' ->
+                if u != u' then
+                  privmsg u'.oc ~nick:u.nick ~target:chan ~msg
+                else
+                  Lwt.return_unit
+              end ch.members
             else
               err_nosuchnick u.oc ~target:chan
         | `Nick n ->
