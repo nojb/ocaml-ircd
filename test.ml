@@ -204,7 +204,7 @@ let err_erroneusnickname oc ~nick =
 let err_unknowncommand oc ~cmd =
   Lwt_io.fprintf oc ":%s 421 %s :Unknown command\r\n" my_hostname cmd
 
-let joined oc ~nick ~channel =
+let join oc ~nick ~channel =
   Lwt_io.fprintf oc ":%s JOIN %s\r\n" nick channel
 
 let quit oc ~nick ~msg =
@@ -232,8 +232,8 @@ let handle_message s u m =
         if List.memq u ch.members then
           err_useronchannel u.oc ~nick:u.nick ~channel:ch.name
         else begin
-          lwt () = Lwt_list.iter_p (fun u' -> joined u'.oc u.nick ch.name) ch.members in
           ch.members <- u :: ch.members;
+          lwt () = Lwt_list.iter_p (fun u' -> join u'.oc u.nick ch.name) ch.members in
           rpl_topic u.oc ~channel:ch.name ?topic:ch.topic >>
           let nicks = List.map (fun u -> u.nick) ch.members in
           rpl_namereply u.oc ~nick:u.nick ~channel:ch.name ~nicks
