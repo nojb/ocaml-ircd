@@ -207,6 +207,14 @@ let err_unknowncommand oc ~cmd =
 let joined oc ~nick ~channel =
   Lwt_io.fprintf oc ":%s JOIN %s\r\n" nick channel
 
+let quit oc ~nick ~msg =
+  Lwt_io.fprintf oc ":%s QUIT :%s\r\n" nick msg
+
+let error oc ~msg =
+  Lwt_io.fprintf oc ":%s ERROR :%s\r\n" my_hostname msg
+
+exception Quit
+
 let handle_message s u m =
   match m with
   | JOIN chans ->
@@ -235,9 +243,12 @@ let handle_message s u m =
       in
       Lwt_list.iter_p send targets
   | QUIT msg ->
-      broadcast u (fun u' -> Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick msg) >>= fun () ->
-      List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
-      Lwt_io.fprintf u.oc ":%s ERROR Bye\r\n" my_hostname
+      Lwt_list.iter_p begin fun ch ->
+        ch.members <- List.filter (fun u' -> u' != u) ch.members;
+        Lwt_list.iter_p (fun u' -> quit u'.oc ~nick:u.nick ~msg) ch.members
+      end u.joined >>
+      error u.oc "Bye!" >>
+      raise_lwt Quit
   | _ ->
       Lwt.return_unit
 
