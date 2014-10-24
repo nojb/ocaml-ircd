@@ -219,6 +219,9 @@ let privmsg oc ~nick ~target ~msg =
 let err_nosuchnick oc ~target =
   Lwt_io.fprintf oc ":%s 401 %s :No such nick/channel\r\n" my_hostname target
 
+let err_alreadyregistered oc =
+  Lwt_io.fprintf oc ":%s 462 :Unauthorized command (already registered)\r\n" my_hostname
+
 exception Quit
 
 let handle_message s u m =
@@ -260,6 +263,8 @@ let handle_message s u m =
       end u.joined >>
       error u.oc "Bye!" >>
       raise_lwt Quit
+  | USER _ ->
+      err_alreadyregistered u.oc
   | _ ->
       Lwt.return_unit
 
