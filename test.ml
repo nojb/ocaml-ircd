@@ -207,12 +207,46 @@ let err_unknowncommand oc ~cmd =
 let joined oc ~nick ~channel =
   Lwt_io.fprintf oc ":%s JOIN %s\r\n" nick channel
 
-let handle_client srv (ic, oc) =
+let handle_message s u m =
+  match m with
+  | JOIN chans ->
+      let chans = List.map (find_channel s) (List.map fst chans) in
+      Lwt_list.iter_p begin fun ch ->
+        if List.memq u ch.members then
+          err_useronchannel u.oc ~nick:u.nick ~channel:ch.name
+        else begin
+          lwt () = Lwt_list.iter_p (fun u' -> joined u'.oc u.nick ch.name) ch.members in
+          ch.members <- u :: ch.members;
+          rpl_topic u.oc ~channel:ch.name ?topic:ch.topic >>
+          let nicks = List.map (fun u -> u.nick) ch.members in
+          rpl_namereply u.oc ~nick:u.nick ~channel:ch.name ~nicks
+        end
+      end chans
+  | PRIVMSG (_, "") ->
+      err_notexttosend u.oc
+  | PRIVMSG (targets, msg) ->
+      let send_user tgt u = Lwt_io.fprintf u.oc ":%s PRIVMSG %s :%s\r\n" u.nick tgt msg in
+      let send = function
+        | `Channel chan ->
+            let ch = H.find s.channels chan in
+            Lwt_list.iter_p (send_user chan) ch.members
+        | `Nick n ->
+            send_user n (H.find s.users n)
+      in
+      Lwt_list.iter_p send targets
+  | QUIT msg ->
+      broadcast u (fun u' -> Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick msg) >>= fun () ->
+      List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
+      Lwt_io.fprintf u.oc ":%s ERROR Bye\r\n" my_hostname
+  | _ ->
+      Lwt.return_unit
+
+let handle_registration s (ic, oc) =
   let rec loop n u =
     lwt l = Lwt_io.read_line ic in
     match parse_message l, n, u with
     | NICK n, _, None ->
-        lwt () = assert_lwt (not (H.mem srv.users n)) in
+        lwt () = assert_lwt (not (H.mem s.users n)) in
         loop (Some n) None
     | NICK n, _, Some (u, r) ->
         Lwt.return (n, u, r)
@@ -221,7 +255,8 @@ let handle_client srv (ic, oc) =
     | USER (u, r), Some n, _ ->
         Lwt.return (n, u, r)
     | _ ->
-        err_notregistered oc >> loop n u
+        err_notregistered oc >>
+        loop n u
     | exception _ ->
         loop n u
   in
@@ -229,61 +264,42 @@ let handle_client srv (ic, oc) =
   let u = { nick = n; user = u; realname = r; joined = []; ic; oc; last_act = Unix.time () } in
   lwt () = rpl_welcome oc ~nick:u.nick ~message:"Welcome to the Mirage IRC Server" in
   lwt () = rpl_motd oc ~motd in
+  H.add s.users n u;
+  Lwt.return u
+
+let handle_client s ((ic, oc) as io) =
+  lwt u = handle_registration s io in
   let rec read_message () =
-    Lwt_io.flush oc >>= fun () ->
-    Lwt_io.read_line ic >>= fun l ->
+    lwt () = Lwt_io.flush oc in
+    lwt l = Lwt_io.read_line ic in
     match parse_message l with
-    | JOIN chans ->
-        let chans = List.map (find_channel srv) (List.map fst chans) in
-        Lwt_list.iter_p begin fun ch ->
-          if List.memq u ch.members then
-            err_useronchannel oc ~nick:u.nick ~channel:ch.name
-          else begin
-            lwt () = Lwt_list.iter_p (fun u' -> joined u'.oc u.nick ch.name) ch.members in
-            ch.members <- u :: ch.members;
-            rpl_topic oc ~channel:ch.name ?topic:ch.topic >>
-            let nicks = List.map (fun u -> u.nick) ch.members in
-            rpl_namereply oc ~nick:u.nick ~channel:ch.name ~nicks
-          end
-        end chans
-    | PRIVMSG (_, "") ->
-        err_notexttosend oc >>= read_message
-    | PRIVMSG (targets, msg) ->
-        let send_user tgt u = Lwt_io.fprintf u.oc ":%s PRIVMSG %s :%s\r\n" u.nick tgt msg in
-        let send = function
-          | `Channel chan ->
-              let ch = H.find srv.channels chan in
-              Lwt_list.iter_p (send_user chan) ch.members
-          | `Nick n ->
-              send_user n (H.find srv.users n)
-        in
-        Lwt_list.iter_p send targets
-    | QUIT msg ->
-        broadcast u (fun u' -> Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick msg) >>= fun () ->
-        List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
-        Lwt_io.fprintf oc ":%s ERROR Bye\r\n" my_hostname
-    | _ ->
-        read_message ()
+    | m ->
+        handle_message s u m >>=
+        read_message
     | exception NoNicknameGiven ->
-        err_nonicknamegiven oc >>= read_message
+        err_nonicknamegiven oc >>=
+        read_message
     | exception (NeedMoreParams cmd) ->
-        err_needmoreparams oc ~cmd >>= read_message
+        err_needmoreparams oc ~cmd >>=
+        read_message
     | exception (ErroneusNickname n) ->
-        err_erroneusnickname oc ~nick:n >>= read_message
+        err_erroneusnickname oc ~nick:n >>=
+        read_message
     | exception (UnknownCommand cmd) ->
-        err_unknowncommand oc ~cmd >>= read_message
+        err_unknowncommand oc ~cmd >>=
+        read_message
     | exception _ ->
         read_message ()
   in
-  Lwt.catch read_message
-    (fun _ ->
-       H.remove srv.users u.nick;
-       List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
-       Lwt_list.iter_p begin fun ch ->
-         Lwt_list.iter_p begin fun u' ->
-           Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick "Connection closed by peer"
-         end ch.members
-       end u.joined)
+  Lwt.catch read_message begin fun _ ->
+    H.remove s.users u.nick;
+    List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
+    Lwt_list.iter_p begin fun ch ->
+      Lwt_list.iter_p begin fun u' ->
+        Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick "Connection closed by peer"
+      end ch.members
+    end u.joined
+  end
 
 let server_loop srv =
   Lwt_io.establish_server
