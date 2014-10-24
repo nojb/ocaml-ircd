@@ -297,7 +297,7 @@ let handle_message s u m =
   | _ ->
       Lwt.return_unit
 
-let handle_registration s (ic, oc) =
+let handle_registration s ic oc =
   let rec loop n u =
     lwt l = Lwt_io.read_line ic in
     match parse_message l, n, u with
@@ -323,8 +323,14 @@ let handle_registration s (ic, oc) =
   H.add s.users n u;
   Lwt.return u
 
-let handle_client s ((ic, oc) as io) =
-  lwt u = handle_registration s io in
+let handle_client s fd =
+  let close = lazy begin
+    Lwt_unix.shutdown fd Unix.SHUTDOWN_ALL;
+    Lwt_unix.close fd
+  end in
+  let ic = Lwt_io.of_fd ~close:(fun () -> Lazy.force close) ~mode:Lwt_io.Input fd in
+  let oc = Lwt_io.of_fd ~close:(fun () -> Lazy.force close) ~mode:Lwt_io.Output fd in
+  lwt u = handle_registration s ic oc in
   let rec read_message () =
     lwt () = Lwt_io.flush oc in
     lwt l = Lwt_io.read_line ic in
@@ -357,10 +363,17 @@ let handle_client s ((ic, oc) as io) =
     end u.joined
   end
 
-let server_loop srv =
-  Lwt_io.establish_server
-    (Unix.ADDR_INET (Unix.inet_addr_any, 6667))
-    (fun io -> Lwt.async (fun () -> handle_client srv io))
+let server_loop s =
+  let fd = Lwt_unix.socket Lwt_unix.PF_INET Lwt_unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt fd Unix.SO_REUSEADDR true;
+  Lwt_unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_any, 6667));
+  Lwt_unix.listen fd 5;
+  let rec loop () =
+    lwt fd, sa = Lwt_unix.accept fd in
+    Lwt.async (fun () -> handle_client s fd);
+    loop ()
+  in
+  loop ()
 
 let _ =
   let srv =
