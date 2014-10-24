@@ -123,7 +123,7 @@ module H = Hashtbl.Make
     end)
 
 type channel =
-  { mutable topic : string;
+  { mutable topic : string option;
     mutable name : string;
     mutable members : user list }
 
@@ -145,6 +145,9 @@ let motd = Stringext.split motd ~on:'\n'
 
 let (>>=) = Lwt.(>>=)
 
+let my_hostname =
+  Unix.gethostname ()
+
 let broadcast u f =
   Lwt_list.iter_p begin fun ch ->
     Lwt_list.iter_p begin fun u' ->
@@ -157,7 +160,7 @@ let find_channel srv name =
     H.find srv.channels name
   with
   | Not_found ->
-      let ch = { members = []; name; topic = "" } in
+      let ch = { members = []; name; topic = None } in
       H.add srv.channels name ch;
       ch
 
@@ -185,12 +188,12 @@ let handle_client srv (ic, oc) =
     { nick = n; user = u; realname = r;
       joined = []; ic; oc; last_act = Unix.time () }
   in
-  lwt () = Lwt_io.fprintf u.oc "001 %s :Welcome to the Mirage IRC Server\r\n" u.nick in
+  lwt () = Lwt_io.fprintf u.oc ":%s 001 %s :Welcome to the Mirage IRC Server\r\n" my_hostname u.nick in
   (* lwt () = Lwt_io.fprintf u.oc "002 %s :Your host is ..., running ...\r\n" u.nick in *)
   (* lwt () = Lwt_io.fprintf u.oc "003 %s :This server was created on ...\r\n" u.nick in *)
-  lwt () = Lwt_io.fprintf u.oc "375 :- Mirage IRC Message of the day - \r\n" in
-  lwt () = Lwt_list.iter_s (fun l -> Lwt_io.fprintf u.oc "372 :- %s\r\n" l) motd in
-  lwt () = Lwt_io.fprintf u.oc "376 :End of /MOTD command\r\n" in
+  lwt () = Lwt_io.fprintf u.oc ":%s 375 :- Mirage IRC Message of the day - \r\n" my_hostname in
+  lwt () = Lwt_list.iter_s (fun l -> Lwt_io.fprintf u.oc ":%s 372 :- %s\r\n" my_hostname l) motd in
+  lwt () = Lwt_io.fprintf u.oc ":%s 376 :End of /MOTD command\r\n" my_hostname in
   let rec read_message () =
     Lwt_io.flush oc >>= fun () ->
     Lwt_io.read_line ic >>= fun l ->
@@ -198,10 +201,25 @@ let handle_client srv (ic, oc) =
     | JOIN chans ->
         let chans = List.map (find_channel srv) (List.map fst chans) in
         Lwt_list.iter_p begin fun ch ->
-          ch.members <- u :: ch.members;
-          Lwt_list.iter_p begin fun u' ->
-            Lwt_io.fprintf u'.oc ":%s JOIN %s\r\n" u.nick ch.name
-          end ch.members
+          if List.memq u ch.members then
+            Lwt_io.fprintf oc ":%s 443 %s %s :is already on channel\r\n" my_hostname u.nick ch.name
+          else begin
+            lwt () =
+              Lwt_list.iter_p begin fun u' ->
+                Lwt_io.fprintf u'.oc ":%s JOIN %s\r\n" u.nick ch.name
+              end ch.members
+            in
+            ch.members <- u :: ch.members;
+            lwt () = match ch.topic with
+              | None -> Lwt_io.fprintf oc ":%s 331 %s :No topic is set\r\n" my_hostname ch.name
+              | Some t -> Lwt_io.fprintf oc ":%s 332 %s :%s\r\n" my_hostname ch.name t
+            in
+            Lwt_io.fprintf oc
+              ":%s 353 %s = %s :%s\r\n" my_hostname u.nick
+              ch.name (String.concat " " (List.map (fun u -> u.nick) ch.members)) >>
+            Lwt_io.fprintf oc
+              ":%s 366 %s %s :End of /NAMES list\r\n" my_hostname u.nick ch.name
+          end
         end chans
     | PRIVMSG (_, "") ->
         Lwt_io.fprintf oc "412 :No text to send\r\n" >>=
@@ -220,20 +238,20 @@ let handle_client srv (ic, oc) =
         prerr_endline "QUIT!";
         broadcast u (fun u' -> Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick msg) >>= fun () ->
         List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
-        Lwt_io.fprintf oc "ERROR Bye\r\n"
+        Lwt_io.fprintf oc ":%s ERROR Bye\r\n" my_hostname
     | _ ->
         read_message ()
     | exception NoNicknameGiven ->
-        Lwt_io.fprintf oc "431 :No nickname given\r\n" >>=
+        Lwt_io.fprintf oc ":%s 431 :No nickname given\r\n" my_hostname >>=
         read_message
     | exception (NeedMoreParams cmd) ->
-        Lwt_io.fprintf oc "461 %s :Not enough parameters\r\n" cmd >>=
+        Lwt_io.fprintf oc ":%s 461 %s :Not enough parameters\r\n" my_hostname cmd >>=
         read_message
     | exception (ErroneusNickname n) ->
-        Lwt_io.fprintf oc "432 %s :Erroneus nickname\r\n" n >>=
+        Lwt_io.fprintf oc ":%s 432 %s :Erroneus nickname\r\n" my_hostname n >>=
         read_message
     | exception (UnknownCommand cmd) ->
-        Lwt_io.fprintf oc "421 %s :Unknown command\r\n" cmd >>=
+        Lwt_io.fprintf oc ":%s 421 %s :Unknown command\r\n" my_hostname cmd >>=
         read_message
     | exception _ ->
         read_message ()
