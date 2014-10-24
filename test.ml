@@ -155,7 +155,7 @@ let broadcast u f =
     end ch.members
   end u.joined
 
-let find_channel srv name =
+let get_channel srv name =
   try
     H.find srv.channels name
   with
@@ -210,7 +210,7 @@ let joined oc ~nick ~channel =
 let handle_message s u m =
   match m with
   | JOIN chans ->
-      let chans = List.map (find_channel s) (List.map fst chans) in
+      let chans = List.map (get_channel s) (List.map fst chans) in
       Lwt_list.iter_p begin fun ch ->
         if List.memq u ch.members then
           err_useronchannel u.oc ~nick:u.nick ~channel:ch.name
