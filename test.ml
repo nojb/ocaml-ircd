@@ -145,6 +145,22 @@ let motd = Stringext.split motd ~on:'\n'
 
 let (>>=) = Lwt.(>>=)
 
+let broadcast u f =
+  Lwt_list.iter_p begin fun ch ->
+    Lwt_list.iter_p begin fun u' ->
+      f u'
+    end ch.members
+  end u.joined
+
+let find_channel srv name =
+  try
+    H.find srv.channels name
+  with
+  | Not_found ->
+      let ch = { members = []; name; topic = "" } in
+      H.add srv.channels name ch;
+      ch
+
 let handle_client srv (ic, oc) =
   let rec loop n u =
     lwt l = Lwt_io.read_line ic in
@@ -170,18 +186,19 @@ let handle_client srv (ic, oc) =
       joined = []; ic; oc; last_act = Unix.time () }
   in
   lwt () = Lwt_io.fprintf u.oc "001 %s :Welcome to the Mirage IRC Server\r\n" u.nick in
-  lwt () = Lwt_io.fprintf u.oc "002 %s :Your host is ..., running ...\r\n" u.nick in
-  lwt () = Lwt_io.fprintf u.oc "003 %s :This server was created on ...\r\n" u.nick in
+  (* lwt () = Lwt_io.fprintf u.oc "002 %s :Your host is ..., running ...\r\n" u.nick in *)
+  (* lwt () = Lwt_io.fprintf u.oc "003 %s :This server was created on ...\r\n" u.nick in *)
   lwt () = Lwt_io.fprintf u.oc "375 :- Mirage IRC Message of the day - \r\n" in
   lwt () = Lwt_list.iter_s (fun l -> Lwt_io.fprintf u.oc "372 :- %s\r\n" l) motd in
   lwt () = Lwt_io.fprintf u.oc "376 :End of MOTD command\r\n" in
   let rec read_message () =
+    Lwt_io.flush oc >>= fun () ->
     Lwt_io.read_line ic >>= fun l ->
     match parse_message l with
     | JOIN chans ->
-        let chans = List.map (H.find srv.channels) (List.map fst chans) in
-        List.iter (fun ch -> ch.members <- u :: ch.members) chans;
+        let chans = List.map (find_channel srv) (List.map fst chans) in
         Lwt_list.iter_p begin fun ch ->
+          ch.members <- u :: ch.members;
           Lwt_list.iter_p begin fun u' ->
             Lwt_io.fprintf u'.oc ":%s JOIN %s\r\n" u.nick ch.name
           end ch.members
@@ -199,6 +216,11 @@ let handle_client srv (ic, oc) =
               send_user n (H.find srv.users n)
         in
         Lwt_list.iter_p send targets
+    | QUIT msg ->
+        prerr_endline "QUIT!";
+        broadcast u (fun u' -> Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick msg) >>= fun () ->
+        List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
+        Lwt_io.fprintf oc "ERROR Bye\r\n"
     | _ ->
         read_message ()
     | exception NoNicknameGiven ->
