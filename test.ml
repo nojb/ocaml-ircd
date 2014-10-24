@@ -213,6 +213,12 @@ let quit oc ~nick ~msg =
 let error oc ~msg =
   Lwt_io.fprintf oc ":%s ERROR :%s\r\n" my_hostname msg
 
+let privmsg oc ~nick ~target ~msg =
+  Lwt_io.fprintf oc ":%s PRIVMSG %s :%s\r\n" nick target msg
+
+let err_nosuchnick oc ~target =
+  Lwt_io.fprintf oc ":%s 401 %s :No such nick/channel\r\n" my_hostname target
+
 exception Quit
 
 let handle_message s u m =
@@ -233,15 +239,20 @@ let handle_message s u m =
   | PRIVMSG (_, "") ->
       err_notexttosend u.oc
   | PRIVMSG (targets, msg) ->
-      let send_user tgt u = Lwt_io.fprintf u.oc ":%s PRIVMSG %s :%s\r\n" u.nick tgt msg in
-      let send = function
+      Lwt_list.iter_p begin function
         | `Channel chan ->
-            let ch = H.find s.channels chan in
-            Lwt_list.iter_p (send_user chan) ch.members
+            if H.mem s.channels chan then
+              let ch = H.find s.channels chan in
+              Lwt_list.iter_p (fun u' -> privmsg u'.oc ~nick:u.nick ~target:chan ~msg) ch.members
+            else
+              err_nosuchnick u.oc ~target:chan
         | `Nick n ->
-            send_user n (H.find s.users n)
-      in
-      Lwt_list.iter_p send targets
+            if H.mem s.users n then
+              let u' = H.find s.users n in
+              privmsg u'.oc ~nick:u.nick ~target:u'.nick ~msg
+            else
+              err_nosuchnick u.oc ~target:n
+      end targets
   | QUIT msg ->
       Lwt_list.iter_p begin fun ch ->
         ch.members <- List.filter (fun u' -> u' != u) ch.members;
