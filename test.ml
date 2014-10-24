@@ -166,13 +166,13 @@ let get_channel srv name =
 let rpl_welcome oc ~nick ~message =
   Lwt_io.fprintf oc ":%s 001 %s :%s\r\n" my_hostname nick message
 
-let rpl_motd oc ~motd =
-  Lwt_io.fprintf oc ":%s 375 :- Mirage IRC Message of the day - \r\n" my_hostname >>
-  Lwt_list.iter_s (fun l -> Lwt_io.fprintf oc ":%s 372 :- %s\r\n" my_hostname l) motd >>
-  Lwt_io.fprintf oc ":%s 376 :End of /MOTD command\r\n" my_hostname
+let rpl_motd oc ~nick ~motd =
+  Lwt_io.fprintf oc ":%s 375 %s :- Mirage IRC Message of the day - \r\n" my_hostname nick >>
+  Lwt_list.iter_s (fun l -> Lwt_io.fprintf oc ":%s 372 %s :- %s\r\n" my_hostname nick l) motd >>
+  Lwt_io.fprintf oc ":%s 376 %s :End of /MOTD command\r\n" my_hostname nick
 
-let err_notregistered oc =
-  Lwt_io.fprintf oc ":%s 451 :You have not registered\r\n" my_hostname
+let err_notregistered oc ~nick =
+  Lwt_io.fprintf oc ":%s 451 %s :You have not registered\r\n" nick my_hostname
 
 let err_useronchannel oc ~nick ~channel =
   Lwt_io.fprintf oc ":%s 443 %s %s :is already on channel\r\n" my_hostname nick channel
@@ -188,20 +188,20 @@ let rpl_namereply oc ~nick ~channel ~nicks =
   Lwt_io.fprintf oc ":%s 353 %s = %s :%s\r\n" my_hostname nick channel (String.concat " " nicks) >>
   Lwt_io.fprintf oc ":%s 366 %s %s :End of /NAMES list\r\n" my_hostname nick channel
 
-let err_notexttosend oc =
-  Lwt_io.fprintf oc ":%s 412 :No text to send\r\n" my_hostname
+let err_notexttosend oc ~nick =
+  Lwt_io.fprintf oc ":%s 412 %s :No text to send\r\n" my_hostname nick
 
-let err_nonicknamegiven oc =
-  Lwt_io.fprintf oc ":%s 431 :No nickname given\r\n" my_hostname
+let err_nonicknamegiven oc ~nick =
+  Lwt_io.fprintf oc ":%s 431 %s :No nickname given\r\n" my_hostname nick
 
-let err_needmoreparams oc ~cmd =
-  Lwt_io.fprintf oc ":%s 461 %s :Not enough parameters\r\n" my_hostname cmd
+let err_needmoreparams oc ~nick ~cmd =
+  Lwt_io.fprintf oc ":%s 461 %s %s :Not enough parameters\r\n" my_hostname nick cmd
 
 let err_erroneusnickname oc ~nick =
   Lwt_io.fprintf oc ":%s 432 %s :Erroneus nickname\r\n" my_hostname nick
 
-let err_unknowncommand oc ~cmd =
-  Lwt_io.fprintf oc ":%s 421 %s :Unknown command\r\n" my_hostname cmd
+let err_unknowncommand oc ~nick ~cmd =
+  Lwt_io.fprintf oc ":%s 421 %s %s :Unknown command\r\n" my_hostname nick cmd
 
 let join oc ~nick ~channel =
   Lwt_io.fprintf oc ":%s JOIN %s\r\n" nick channel
@@ -218,11 +218,11 @@ let privmsg oc ~nick ~target ~msg =
 let err_nosuchnick oc ~target =
   Lwt_io.fprintf oc ":%s 401 %s :No such nick/channel\r\n" my_hostname target
 
-let err_alreadyregistered oc =
-  Lwt_io.fprintf oc ":%s 462 :Unauthorized command (already registered)\r\n" my_hostname
+let err_alreadyregistered oc ~nick =
+  Lwt_io.fprintf oc ":%s 462 %s :Unauthorized command (already registered)\r\n" my_hostname nick
 
-let err_notonchannel oc ~channel =
-  Lwt_io.fprintf oc ":%s 442 %s :You're not on that channel\r\n" my_hostname channel
+let err_notonchannel oc ~nick ~channel =
+  Lwt_io.fprintf oc ":%s 442 %s %s :You're not on that channel\r\n" my_hostname nick channel
 
 exception Quit
 
@@ -243,7 +243,7 @@ let handle_message s u m =
         end
       end chans
   | PRIVMSG (_, "") ->
-      err_notexttosend u.oc
+      err_notexttosend u.oc ~nick:u.nick
   | PRIVMSG (targets, msg) ->
       Lwt_list.iter_p begin function
         | `Channel chan ->
@@ -272,16 +272,16 @@ let handle_message s u m =
       error u.oc "Bye!" >>
       raise_lwt Quit
   | USER _ ->
-      err_alreadyregistered u.oc
+      err_alreadyregistered u.oc ~nick:u.nick
   | GET_TOPIC ch ->
       if H.mem s.channels ch then
         let c = H.find s.channels ch in
         if List.memq c u.joined then
           rpl_topic u.oc ?source:None ?topic:c.topic ~target:u.nick ~channel:ch
         else
-          err_notonchannel u.oc ~channel:ch
+          err_notonchannel u.oc ~nick:u.nick ~channel:ch
       else
-        err_notonchannel u.oc ~channel:ch
+        err_notonchannel u.oc ~nick:u.nick ~channel:ch
   | SET_TOPIC (ch, topic) ->
       if H.mem s.channels ch then
         let c = H.find s.channels ch in
@@ -291,9 +291,9 @@ let handle_message s u m =
             rpl_topic u'.oc ~source:u.nick ?topic ~target:u'.nick ~channel:ch
           end c.members
         end else
-          err_notonchannel u.oc ~channel:ch
+          err_notonchannel u.oc ~nick:u.nick ~channel:ch
       else
-        err_notonchannel u.oc ~channel:ch
+        err_notonchannel u.oc ~nick:u.nick ~channel:ch
   | _ ->
       Lwt.return_unit
 
@@ -310,8 +310,11 @@ let handle_registration s ic oc =
         loop None (Some (u, r))
     | USER (u, r), Some n, _ ->
         Lwt.return (n, u, r)
-    | _ ->
-        err_notregistered oc >>
+    | _, Some nick, _ ->
+        err_notregistered ~nick oc >>
+        loop n u
+    | _, None, _ ->
+        err_notregistered ~nick:"*" oc >>
         loop n u
     | exception _ ->
         loop n u
@@ -319,7 +322,7 @@ let handle_registration s ic oc =
   lwt n, u, r = loop None None in
   let u = { nick = n; user = u; realname = r; joined = []; ic; oc; last_act = Unix.time () } in
   lwt () = rpl_welcome oc ~nick:u.nick ~message:"Welcome to the Mirage IRC Server" in
-  lwt () = rpl_motd oc ~motd in
+  lwt () = rpl_motd oc ~nick:n ~motd in
   H.add s.users n u;
   Lwt.return u
 
@@ -339,16 +342,16 @@ let handle_client s fd =
         handle_message s u m >>=
         read_message
     | exception NoNicknameGiven ->
-        err_nonicknamegiven oc >>=
+        err_nonicknamegiven ~nick:u.nick oc >>=
         read_message
     | exception (NeedMoreParams cmd) ->
-        err_needmoreparams oc ~cmd >>=
+        err_needmoreparams oc ~nick:u.nick ~cmd >>=
         read_message
     | exception (ErroneusNickname n) ->
-        err_erroneusnickname oc ~nick:n >>=
+        err_erroneusnickname oc ~nick:u.nick >>=
         read_message
     | exception (UnknownCommand cmd) ->
-        err_unknowncommand oc ~cmd >>=
+        err_unknowncommand oc ~nick:u.nick ~cmd >>=
         read_message
     | exception _ ->
         read_message ()
@@ -363,8 +366,7 @@ let handle_client s fd =
         end ch.members
       end u.joined
     in
-    Lwt_io.close oc;
-    Lwt.return_unit
+    Lwt_io.close oc
   end
 
 let server_loop s =
