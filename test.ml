@@ -335,8 +335,11 @@ let handle_registration s ic oc =
 
 let handle_client s fd =
   let close = lazy begin
-    Lwt_unix.shutdown fd Unix.SHUTDOWN_ALL;
-    Lwt_unix.close fd
+    try_lwt
+      Lwt_unix.shutdown fd Unix.SHUTDOWN_ALL;
+      Lwt_unix.close fd
+    with
+    | _ -> Lwt.return_unit
   end in
   let ic = Lwt_io.of_fd ~close:(fun () -> Lazy.force close) ~mode:Lwt_io.Input fd in
   let oc = Lwt_io.of_fd ~close:(fun () -> Lazy.force close) ~mode:Lwt_io.Output fd in
