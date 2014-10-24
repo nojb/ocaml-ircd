@@ -15,7 +15,7 @@ type message =
   | QUIT of string
   | PART_ALL
   | JOIN of (string * string option) list
-  | PART of string list * string
+  | PART of string list * string option
   | GET_TOPIC of string
   | SET_TOPIC of string * string option
   | NAMES of string list * string option
@@ -84,10 +84,10 @@ let parse_message l =
       raise (NeedMoreParams command)
   | "PART", channels :: [] ->
       let channels = tok Lexer.channel_list channels in
-      PART (channels, "")
+      PART (channels, None)
   | "PART", channels :: msg :: _ ->
       let channels = tok Lexer.channel_list channels in
-      PART (channels, msg)
+      PART (channels, Some msg)
   | "TOPIC", [] ->
       raise (NeedMoreParams command)
   | "TOPIC", chan :: [] ->
@@ -232,8 +232,14 @@ let err_nosuchnick oc nick ~target =
 let err_alreadyregistered oc nick =
   Lwt_io.fprintf oc ":%s 462 %s :Unauthorized command (already registered)\r\n" my_hostname nick
 
+let err_nosuchchannel oc nick ~channel =
+  Lwt_io.fprintf oc ":%s 403 %s %s :No such channel\r\n" my_hostname nick channel
+
 let err_notonchannel oc nick ~channel =
   Lwt_io.fprintf oc ":%s 442 %s %s :You're not on that channel\r\n" my_hostname nick channel
+
+let part oc u ~channel ~msg =
+  Lwt_io.fprintf oc ":%s!%s@%s PART %s %s\r\n" u.nick u.user u.host channel msg
 
 exception Quit
 
@@ -252,6 +258,22 @@ let handle_message s u m =
           let nicks = List.map (fun u -> u.nick) ch.members in
           rpl_namereply u.oc u.nick ~channel:ch.name ~nicks
         end
+      end chans
+  | PART (chans, msg) ->
+      let msg = match msg with None -> u.nick | Some msg -> msg in
+      Lwt_list.iter_p begin fun ch ->
+        if not (H.mem s.channels ch) then
+          err_nosuchchannel u.oc u.nick ~channel:ch
+        else
+          let ch = H.find s.channels ch in
+          if not (List.memq ch u.joined) then
+            err_notonchannel u.oc u.nick ~channel:ch.name
+          else begin
+            lwt () = Lwt_list.iter_p (fun u' -> part u'.oc u ~channel:ch.name ~msg) ch.members in
+            u.joined <- List.filter (fun ch' -> ch' != ch) u.joined;
+            ch.members <- List.filter (fun u' -> u' != u) ch.members;
+            Lwt.return_unit
+          end
       end chans
   | PRIVMSG (targets, msg) ->
       Lwt_list.iter_p begin function
