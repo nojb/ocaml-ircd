@@ -16,7 +16,8 @@ type message =
   | PART_ALL
   | JOIN of (string * string option) list
   | PART of string list * string
-  | TOPIC of string * string
+  | GET_TOPIC of string
+  | SET_TOPIC of string * string option
   | NAMES of string list * string option
   | LIST of string list * string option
   | INVITE of string * string
@@ -86,12 +87,17 @@ let parse_message l =
   | "PART", channels :: msg :: _ ->
       let channels = tok Lexer.channel_list channels in
       PART (channels, msg)
-  | "TOPIC", [chan] ->
+  | "TOPIC", [] ->
+      raise (NeedMoreParams command)
+  | "TOPIC", chan :: [] ->
       let chan = tok Lexer.channel chan in
-      TOPIC (chan, "")
-  | "TOPIC", [chan; topic] ->
+      GET_TOPIC chan
+  | "TOPIC", chan :: "" :: _ ->
       let chan = tok Lexer.channel chan in
-      TOPIC (chan, topic)
+      SET_TOPIC (chan, None)
+  | "TOPIC", chan :: topic :: _ ->
+      let chan = tok Lexer.channel chan in
+      SET_TOPIC (chan, Some topic)
   | "PRIVMSG", msgtarget :: texttobesent :: _ ->
       let msgtarget = tok Lexer.msgtarget msgtarget in
       PRIVMSG (msgtarget, texttobesent)
@@ -215,6 +221,9 @@ let err_nosuchnick oc ~target =
 let err_alreadyregistered oc =
   Lwt_io.fprintf oc ":%s 462 :Unauthorized command (already registered)\r\n" my_hostname
 
+let err_notonchannel oc ~channel =
+  Lwt_io.fprintf oc ":%s 442 %s :You're not on that channel\r\n" my_hostname channel
+
 exception Quit
 
 let handle_message s u m =
@@ -263,6 +272,25 @@ let handle_message s u m =
       raise_lwt Quit
   | USER _ ->
       err_alreadyregistered u.oc
+  | GET_TOPIC ch ->
+      if H.mem s.channels ch then
+        let c = H.find s.channels ch in
+        if List.memq c u.joined then
+          rpl_topic u.oc ?topic:c.topic ~channel:ch
+        else
+          err_notonchannel u.oc ~channel:ch
+      else
+        err_notonchannel u.oc ~channel:ch
+  | SET_TOPIC (ch, topic) ->
+      if H.mem s.channels ch then
+        let c = H.find s.channels ch in
+        if List.memq c u.joined then begin
+          c.topic <- topic; (* FIXME perms *)
+          rpl_topic u.oc ?topic ~channel:ch
+        end else
+          err_notonchannel u.oc ~channel:ch
+      else
+        err_notonchannel u.oc ~channel:ch
   | _ ->
       Lwt.return_unit
 
