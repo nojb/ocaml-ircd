@@ -148,13 +148,6 @@ let (>>=) = Lwt.(>>=)
 let my_hostname =
   Unix.gethostname ()
 
-let broadcast u f =
-  Lwt_list.iter_p begin fun ch ->
-    Lwt_list.iter_p begin fun u' ->
-      f u'
-    end ch.members
-  end u.joined
-
 let get_channel srv name =
   try
     H.find srv.channels name
