@@ -356,17 +356,22 @@ let handle_client s fd =
     | exception _ ->
         read_message ()
   in
-  Lwt.catch read_message begin fun _ ->
-    H.remove s.users u.nick;
-    List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
-    lwt () =
-      Lwt_list.iter_p begin fun ch ->
-        Lwt_list.iter_p begin fun u' ->
-          Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick "Connection closed by peer"
-        end ch.members
-      end u.joined
-    in
-    Lwt_io.close oc
+  Lwt.catch read_message begin function
+    | Quit ->
+        H.remove s.users u.nick;
+        List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
+        Lwt_io.close oc
+    | _ ->
+        H.remove s.users u.nick;
+        List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined;
+        lwt () =
+          Lwt_list.iter_p begin fun ch ->
+            Lwt_list.iter_p begin fun u' ->
+              Lwt_io.fprintf u'.oc ":%s QUIT :%s\r\n" u.nick "Connection closed by peer"
+            end ch.members
+          end u.joined
+        in
+        Lwt_io.close oc
   end
 
 let server_loop s =
