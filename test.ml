@@ -177,12 +177,12 @@ let err_notregistered oc ~nick =
 let err_useronchannel oc ~nick ~channel =
   Lwt_io.fprintf oc ":%s 443 %s %s :is already on channel\r\n" my_hostname nick channel
 
-let rpl_topic oc ?(source = my_hostname) ?topic ~nick ~channel =
+let rpl_topic oc ?topic ~nick ~channel =
   match topic with
   | None ->
-      Lwt_io.fprintf oc ":%s 331 %s %s :No topic is set\r\n" source nick channel
+      Lwt_io.fprintf oc ":%s 331 %s %s :No topic is set\r\n" my_hostname nick channel
   | Some topic ->
-      Lwt_io.fprintf oc ":%s 332 %s %s :%s\r\n" source nick channel topic
+      Lwt_io.fprintf oc ":%s 332 %s %s :%s\r\n" my_hostname nick channel topic
 
 let rpl_namereply oc ~nick ~channel ~nicks =
   Lwt_io.fprintf oc ":%s 353 %s = %s :%s\r\n" my_hostname nick channel (String.concat " " nicks) >>
@@ -215,6 +215,13 @@ let error oc ~msg =
 let privmsg oc ~nick ~target ~msg =
   Lwt_io.fprintf oc ":%s PRIVMSG %s :%s\r\n" nick target msg
 
+let set_topic oc ~from ?topic ~channel =
+  match topic with
+  | None ->
+      Lwt_io.fprintf oc ":%s TOPIC %s :\r\n" from channel
+  | Some topic ->
+      Lwt_io.fprintf oc ":%s TOPIC %s :%s\r\n" from channel topic
+
 let err_nosuchnick oc ~target =
   Lwt_io.fprintf oc ":%s 401 %s :No such nick/channel\r\n" my_hostname target
 
@@ -237,7 +244,7 @@ let handle_message s u m =
           ch.members <- u :: ch.members;
           u.joined <- ch :: u.joined;
           lwt () = Lwt_list.iter_p (fun u' -> join u'.oc u.nick ch.name) ch.members in
-          rpl_topic u.oc ?source:None ?topic:ch.topic ~nick:u.nick ~channel:ch.name >>
+          rpl_topic u.oc ?topic:ch.topic ~nick:u.nick ~channel:ch.name >>
           let nicks = List.map (fun u -> u.nick) ch.members in
           rpl_namereply u.oc ~nick:u.nick ~channel:ch.name ~nicks
         end
@@ -277,7 +284,7 @@ let handle_message s u m =
       if H.mem s.channels ch then
         let c = H.find s.channels ch in
         if List.memq c u.joined then
-          rpl_topic u.oc ?source:None ?topic:c.topic ~nick:u.nick ~channel:ch
+          rpl_topic u.oc ?topic:c.topic ~nick:u.nick ~channel:ch
         else
           err_notonchannel u.oc ~nick:u.nick ~channel:ch
       else
@@ -288,7 +295,7 @@ let handle_message s u m =
         if List.memq c u.joined then begin
           c.topic <- topic; (* FIXME perms *)
           Lwt_list.iter_p begin fun u' ->
-            rpl_topic u'.oc ?source:None ?topic ~nick:u'.nick ~channel:ch
+            set_topic u'.oc ~from:u.nick ?topic ~channel:ch
           end c.members
         end else
           err_notonchannel u.oc ~nick:u.nick ~channel:ch
