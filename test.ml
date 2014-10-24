@@ -27,6 +27,7 @@ exception ErroneusNickname of string
 exception NoNicknameGiven
 exception NeedMoreParams of string
 exception UnknownCommand of string
+exception NoTextToSend
 
 let nickname n =
   try
@@ -38,10 +39,10 @@ let parse_message l =
   let tok lex l = lex (Lexing.from_string l) in
   let command, params = Lexer.message (Lexing.from_string l) in
   match String.uppercase command, params with
-  | "NICK", [n] ->
-      NICK (nickname n)
   | "NICK", [] ->
       raise NoNicknameGiven
+  | "NICK", n :: _ ->
+      NICK (nickname n)
   | "USER", user :: mode :: _ :: realname :: _ ->
       let user = tok Lexer.user user in
       USER (user, realname)
@@ -98,6 +99,8 @@ let parse_message l =
   | "TOPIC", chan :: topic :: _ ->
       let chan = tok Lexer.channel chan in
       SET_TOPIC (chan, Some topic)
+  | "PRIVMSG", _ :: [] ->
+      raise NoTextToSend
   | "PRIVMSG", msgtarget :: texttobesent :: _ ->
       let msgtarget = tok Lexer.msgtarget msgtarget in
       PRIVMSG (msgtarget, texttobesent)
@@ -250,8 +253,6 @@ let handle_message s u m =
           rpl_namereply u.oc u.nick ~channel:ch.name ~nicks
         end
       end chans
-  | PRIVMSG (_, "") ->
-      err_notexttosend u.oc u.nick
   | PRIVMSG (targets, msg) ->
       Lwt_list.iter_p begin function
         | `Channel chan ->
@@ -367,6 +368,9 @@ let handle_client s fd =
         read_message
     | exception (UnknownCommand cmd) ->
         err_unknowncommand oc u.nick ~cmd >>=
+        read_message
+    | exception NoTextToSend ->
+        err_notexttosend oc u.nick >>=
         read_message
     | exception _ ->
         read_message ()
