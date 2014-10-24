@@ -124,12 +124,12 @@ module H = Hashtbl.Make
 
 type channel =
   { mutable topic : string option;
-    mutable name : string;
+    name : string;
     mutable members : user list }
 
 and user =
   { mutable nick : string;
-    mutable user : string;
+    user : string;
     mutable realname : string;
     mutable joined : channel list;
     ic : Lwt_io.input_channel;
