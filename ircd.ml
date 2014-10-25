@@ -263,7 +263,7 @@ module Commands = struct
     end u.joined >>
     error u.oc u.nick "Bye!" >>
     raise_lwt Quit
-  let user s u _ =
+  let user _ u _ =
     err_alreadyregistered u.oc u.nick
   let topic s u = function
     | [] ->
