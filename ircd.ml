@@ -420,13 +420,6 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
 
   let (>>=) = Lwt.(>>=)
 
-  let handle_message s u (m, params) =
-    try
-      H.find Commands.commands m s u params
-    with
-    | Not_found ->
-        raise (UnknownCommand m)
-
   let read_line io =
     lwt cs = C.read_line io in
     let str = String.create (Cstruct.lenv cs) in
@@ -473,9 +466,9 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       | exception _ ->
           try_register n u
     in
-    let addr, _ = SV4.TCPV4.get_dest (C.to_flow io) in
+    (* let addr, _ = SV4.TCPV4.get_dest (C.to_flow io) in *)
     (* lwt sl = Dns.gethostbyaddr dns addr and n, u, r = try_register None None in *)
-    lwt sl = Lwt.return ["*"] and n, u, r = try_register None None in
+    lwt sl = Lwt.return [] and n, u, r = try_register None None in
     let u =
       { nick = n; user = u; host = (match sl with n :: _ -> n | [] -> "*");
         realname = r; joined = []; io; last_act = Unix.time () }
@@ -485,53 +478,57 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     H.add s.users n u;
     Lwt.return u
 
+  let handle_message con s u l =
+    log con "<- %S" l;
+    let m, params =
+      try
+        parse_message l
+      with exn ->
+        log con "Error while parsing: %s" (Printexc.to_string exn);
+        raise exn
+    in
+    try
+      let cmd = try H.find Commands.commands with Not_found -> raise (UnknownCommand m) in
+      cmd m s u params
+    with
+    | NoNicknameGiven ->
+        Err.nonicknamegiven u.io u.nick
+    | NeedMoreParams cmd ->
+        Err.needmoreparams u.io u.nick ~cmd
+    | ErroneusNickname n ->
+        Err.erroneusnickname u.io u.nick
+    | UnknownCommand cmd ->
+        Err.unknowncommand u.io u.nick ~cmd
+    | NoTextToSend ->
+        Err.notexttosend u.io u.nick
+    | NoOrigin ->
+        Err.noorigin u.io u.nick
+    | NoRecipient cmd ->
+        Err.norecipient u.io u.nick ~cmd
+    | NotOnChannel channel ->
+        Err.notonchannel u.io u.nick ~channel
+    | NoSuchNick target ->
+        Err.nosuchnick u.io u.nick ~target
+    | NoSuchChannel channel ->
+        Err.nosuchchannel u.io u.nick ~channel
+    | AlreadyRegistered ->
+        Err.alreadyregistered u.io u.nick
+    | UserOnChannel channel ->
+        Err.useronchannel u.io u.nick ~channel
+    | exn ->
+        log con "Error while handling: %s" (Printexc.to_string exn)
+
   let handle_client con dns s flow =
     let io = C.create flow in
     lwt u = handle_registration con dns s io in
-    let rec read_message () =
+    let rec loop () =
       lwt () = C.flush io in
       lwt l = read_line io in
-      log con "<- %S" l;
-      match parse_message l with
-      | m ->
-          begin
-            try
-              handle_message s u m
-            with
-            | NoNicknameGiven ->
-                Err.nonicknamegiven io u.nick
-            | NeedMoreParams cmd ->
-                Err.needmoreparams io u.nick ~cmd
-            | ErroneusNickname n ->
-                Err.erroneusnickname io u.nick
-            | UnknownCommand cmd ->
-                Err.unknowncommand io u.nick ~cmd
-            | NoTextToSend ->
-                Err.notexttosend io u.nick
-            | NoOrigin ->
-                Err.noorigin io u.nick
-            | NoRecipient cmd ->
-                Err.norecipient io u.nick ~cmd
-            | NotOnChannel channel ->
-                Err.notonchannel io u.nick ~channel
-            | NoSuchNick target ->
-                Err.nosuchnick io u.nick ~target
-            | NoSuchChannel channel ->
-                Err.nosuchchannel io u.nick ~channel
-            | AlreadyRegistered ->
-                Err.alreadyregistered io u.nick
-            | UserOnChannel channel ->
-                Err.useronchannel io u.nick ~channel
-            | exn ->
-                log con "Error while handling: %s" (Printexc.to_string exn)
-          end;
-          read_message ()
-      | exception exn ->
-          log con "Error while parsing: %s" (Printexc.to_string exn);
-          read_message ()
+      handle_message con s u l;
+      loop ()
     in
     try_lwt
-      read_message ()
+      loop ()
     with
     | Quit ->
         H.remove s.users u.nick;
