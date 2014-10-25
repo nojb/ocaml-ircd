@@ -252,8 +252,8 @@ let err_notonchannel oc nick ~channel =
 let part oc u ~channel ~msg =
   Lwt_io.fprintf oc ":%s!%s@%s PART %s %s\r\n" u.nick u.user u.host channel msg
 
-let pong oc nick =
-  Lwt_io.fprintf oc ":%s PONG %s\r\n" my_hostname my_hostname
+let pong oc nick ~msg =
+  Lwt_io.fprintf oc ":%s PONG %s\r\n" my_hostname msg
 
 let err_noorigin oc nick =
   Lwt_io.fprintf oc ":%s 409 %s :No origin specified\r\n" my_hostname nick
@@ -346,7 +346,7 @@ let handle_message s u m =
       else
         err_notonchannel u.oc u.nick ~channel:ch
   | PING origin ->
-      pong u.oc u.nick
+      pong u.oc u.nick ~msg:origin
   | ISON nicks ->
       let nicks = List.filter (H.mem s.users) nicks in
       rpl_ison u.oc u.nick nicks
