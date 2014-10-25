@@ -7,116 +7,13 @@ type mode =
   | LocalOperator
   | ServerNotices
 
-type message =
-  | NICK of string
-  | USER of string * string
-  | OPER of string * string
-  | MODE of string * string
-  | QUIT of string
-  | PART_ALL
-  | JOIN of (string * string option) list
-  | PART of string list * string option
-  | GET_TOPIC of string
-  | SET_TOPIC of string * string option
-  | NAMES of string list * string option
-  | LIST of string list * string option
-  | INVITE of string * string
-  | PRIVMSG of [ `Channel of string | `Nick of string ] list * string
-  | PING of string
-  | ISON of string list
-
 exception ErroneusNickname of string
 exception NoNicknameGiven
 exception NeedMoreParams of string
 exception UnknownCommand of string
 exception NoTextToSend
 exception NoOrigin
-
-let nickname n =
-  try
-    Lexer.nickname (Lexing.from_string n)
-  with
-  | _ -> raise (ErroneusNickname n)
-
-let parse_message l =
-  let tok lex l = lex (Lexing.from_string l) in
-  let command, params = Lexer.message (Lexing.from_string l) in
-  match String.uppercase command, params with
-  | "NICK", [] ->
-      raise NoNicknameGiven
-  | "NICK", n :: _ ->
-      NICK (nickname n)
-  | "USER", user :: mode :: _ :: realname :: _ ->
-      let user = tok Lexer.user user in
-      USER (user, realname)
-  | "USER", _ ->
-      raise (NeedMoreParams command)
-  | "OPER", name :: password :: _ ->
-      OPER (name, password)
-  | "OPER", _ ->
-      raise (NeedMoreParams command)
-  | "MODE", nick :: modes :: _ ->
-      MODE (nick, modes)
-  | "MODE", _ ->
-      raise (NeedMoreParams command)
-  | "QUIT", [] ->
-      QUIT ""
-  | "QUIT", msg :: _ ->
-      QUIT msg
-  | "JOIN", "0" :: [] ->
-      PART_ALL
-  | "JOIN", channels :: [] ->
-      let channels = tok Lexer.channel_list channels in
-      JOIN (List.map (fun x -> (x, None)) channels)
-  | "JOIN", channels :: keys :: _ ->
-      let channels = tok Lexer.channel_list channels in
-      let keys = tok Lexer.key_list keys in
-      let rec loop cs ks =
-        match cs, ks with
-        | c :: cs, k :: ks ->
-            (c, Some k) :: loop cs ks
-        | cs, [] ->
-            List.map (fun c -> (c, None)) cs
-        | [], _ ->
-            []
-      in
-      JOIN (loop channels keys)
-  | "JOIN", [] ->
-      raise (NeedMoreParams command)
-  | "PART", [] ->
-      raise (NeedMoreParams command)
-  | "PART", channels :: [] ->
-      let channels = tok Lexer.channel_list channels in
-      PART (channels, None)
-  | "PART", channels :: msg :: _ ->
-      let channels = tok Lexer.channel_list channels in
-      PART (channels, Some msg)
-  | "TOPIC", [] ->
-      raise (NeedMoreParams command)
-  | "TOPIC", chan :: [] ->
-      let chan = tok Lexer.channel chan in
-      GET_TOPIC chan
-  | "TOPIC", chan :: "" :: _ ->
-      let chan = tok Lexer.channel chan in
-      SET_TOPIC (chan, None)
-  | "TOPIC", chan :: topic :: _ ->
-      let chan = tok Lexer.channel chan in
-      SET_TOPIC (chan, Some topic)
-  | "PRIVMSG", _ :: [] ->
-      raise NoTextToSend
-  | "PRIVMSG", msgtarget :: texttobesent :: _ ->
-      let msgtarget = tok Lexer.msgtarget msgtarget in
-      PRIVMSG (msgtarget, texttobesent)
-  | "PING", [] ->
-      raise NoOrigin
-  | "PING", origin :: _ ->
-      PING origin
-  | "ISON", [] ->
-      raise (NeedMoreParams command)
-  | "ISON", _ :: _ ->
-      ISON (List.map nickname params)
-  | _ ->
-      raise (UnknownCommand command)
+exception NoRecipient of string
 
 module H = Hashtbl.Make
     (struct
@@ -261,124 +158,208 @@ let err_noorigin oc nick =
 let rpl_ison oc nick nicks =
   Lwt_io.fprintf oc ":%s 303 %s :%s\r\n" my_hostname nick (String.concat " " nicks)
 
+let err_norecipient oc nick ~cmd =
+  Lwt_io.fprintf oc ":%s 411 %s :No recipient given (%s)\r\n" my_hostname nick cmd
+
+let err_nicknameinuse oc n ~nick =
+  Lwt_io.fprintf oc ":%s 433 %s %s :Nickname is already in use\r\n" my_hostname n nick
+
 exception Quit
 
-let handle_message s u m =
-  match m with
-  | JOIN chans ->
-      let chans = List.map (get_channel s) (List.map fst chans) in
-      Lwt_list.iter_p begin fun ch ->
-        if List.memq u ch.members then
-          err_useronchannel u.oc u.nick ~channel:ch.name
-        else begin
-          ch.members <- u :: ch.members;
-          u.joined <- ch :: u.joined;
-          lwt () = Lwt_list.iter_p (fun u' -> join u'.oc u ~channel:ch.name) ch.members in
-          rpl_topic u.oc ?topic:ch.topic u.nick ~channel:ch.name >>
-          let nicks = List.map (fun u -> u.nick) ch.members in
-          rpl_namereply u.oc u.nick ~channel:ch.name ~nicks
-        end
-      end chans
-  | PART (chans, msg) ->
-      let msg = match msg with None -> u.nick | Some msg -> msg in
-      Lwt_list.iter_p begin fun ch ->
-        if not (H.mem s.channels ch) then
-          err_nosuchchannel u.oc u.nick ~channel:ch
-        else
-          let ch = H.find s.channels ch in
-          if not (List.memq ch u.joined) then
-            err_notonchannel u.oc u.nick ~channel:ch.name
-          else begin
+type command =
+  server -> user -> string list -> unit Lwt.t
+
+let parse_message l =
+  let cmd, params = Lexer.message (Lexing.from_string l) in
+  String.uppercase cmd, params
+
+module Commands = struct
+  let tok lex l = lex (Lexing.from_string l)
+  let nickname n =
+    try
+      Lexer.nickname (Lexing.from_string n)
+    with
+    | _ -> raise (ErroneusNickname n)
+  let join s u = function
+    | [] ->
+        raise_lwt (NeedMoreParams "JOIN")
+    | "0" :: params ->
+        let msg = match params with msg :: _ -> msg | [] -> u.nick in
+        lwt () =
+          Lwt_list.iter_p begin fun ch ->
             lwt () = Lwt_list.iter_p (fun u' -> part u'.oc u ~channel:ch.name ~msg) ch.members in
-            u.joined <- List.filter (fun ch' -> ch' != ch) u.joined;
             ch.members <- List.filter (fun u' -> u' != u) ch.members;
             Lwt.return_unit
+          end u.joined
+        in
+        u.joined <- [];
+        Lwt.return_unit
+    | chl :: _ ->
+        let chl = tok Lexer.channel_list chl in
+        let chl = List.map (get_channel s) chl in
+        Lwt_list.iter_p begin fun ch ->
+          if List.memq u ch.members then
+            err_useronchannel u.oc u.nick ~channel:ch.name
+          else begin
+            ch.members <- u :: ch.members;
+            u.joined <- ch :: u.joined;
+            lwt () = Lwt_list.iter_p (fun u' -> join u'.oc u ~channel:ch.name) ch.members in
+            rpl_topic u.oc ?topic:ch.topic u.nick ~channel:ch.name >>
+            let nicks = List.map (fun u -> u.nick) ch.members in
+            rpl_namereply u.oc u.nick ~channel:ch.name ~nicks
           end
-      end chans
-  | PRIVMSG (targets, msg) ->
-      Lwt_list.iter_p begin function
-        | `Channel chan ->
-            if H.mem s.channels chan then
-              let ch = H.find s.channels chan in
-              Lwt_list.iter_p begin fun u' ->
-                if u != u' then
-                  privmsg u'.oc u ~target:chan ~msg
-                else
-                  Lwt.return_unit
-              end ch.members
-            else
-              err_nosuchnick u.oc u.nick ~target:chan
-        | `Nick n ->
-            if H.mem s.users n then
-              let u' = H.find s.users n in
-              privmsg u'.oc u ~target:u'.nick ~msg
-            else
-              err_nosuchnick u.oc u.nick ~target:n
-      end targets
-  | QUIT msg ->
-      Lwt_list.iter_p begin fun ch ->
-        ch.members <- List.filter (fun u' -> u' != u) ch.members;
-        Lwt_list.iter_p (fun u' -> quit u'.oc u ~msg) ch.members
-      end u.joined >>
-      error u.oc u.nick "Bye!" >>
-      raise_lwt Quit
-  | USER _ ->
-      err_alreadyregistered u.oc u.nick
-  | GET_TOPIC ch ->
-      if H.mem s.channels ch then
-        let c = H.find s.channels ch in
-        if List.memq c u.joined then
-          rpl_topic u.oc ?topic:c.topic u.nick ~channel:ch
+        end chl
+  let part s u = function
+    | [] ->
+        raise_lwt (NeedMoreParams "PART")
+    | chl :: msg ->
+        let chl = tok Lexer.channel_list chl in
+        let msg = match msg with [] -> u.nick | msg :: _ -> msg in
+        Lwt_list.iter_p begin fun ch ->
+          if not (H.mem s.channels ch) then
+            err_nosuchchannel u.oc u.nick ~channel:ch
+          else
+            let ch = H.find s.channels ch in
+            if not (List.memq ch u.joined) then
+              err_notonchannel u.oc u.nick ~channel:ch.name
+            else begin
+              lwt () = Lwt_list.iter_p (fun u' -> part u'.oc u ~channel:ch.name ~msg) ch.members in
+              u.joined <- List.filter (fun ch' -> ch' != ch) u.joined;
+              ch.members <- List.filter (fun u' -> u' != u) ch.members;
+              Lwt.return_unit
+            end
+        end chl
+  let privmsg s u = function
+    | [] ->
+        raise_lwt (NoRecipient "PRIVMSG")
+    | _ :: [] ->
+        raise_lwt (NoTextToSend)
+    | msgtarget :: msg :: _ ->
+        let targets = tok Lexer.msgtarget msgtarget in
+        Lwt_list.iter_p begin function
+          | `Channel chan ->
+              if H.mem s.channels chan then
+                let ch = H.find s.channels chan in
+                Lwt_list.iter_p begin fun u' ->
+                  if u != u' then
+                    privmsg u'.oc u ~target:chan ~msg
+                  else
+                    Lwt.return_unit
+                end ch.members
+              else
+                err_nosuchnick u.oc u.nick ~target:chan
+          | `Nick n ->
+              if H.mem s.users n then
+                let u' = H.find s.users n in
+                privmsg u'.oc u ~target:u'.nick ~msg
+              else
+                err_nosuchnick u.oc u.nick ~target:n
+        end targets
+  let quit s u params =
+    let msg = match params with [] -> "" | msg :: _ -> msg in
+    Lwt_list.iter_p begin fun ch ->
+      ch.members <- List.filter (fun u' -> u' != u) ch.members;
+      Lwt_list.iter_p (fun u' -> quit u'.oc u ~msg) ch.members
+    end u.joined >>
+    error u.oc u.nick "Bye!" >>
+    raise_lwt Quit
+  let user s u _ =
+    err_alreadyregistered u.oc u.nick
+  let topic s u = function
+    | [] ->
+        raise_lwt (NeedMoreParams "TOPIC")
+    | ch :: [] ->
+        let ch = tok Lexer.channel ch in
+        if H.mem s.channels ch then
+          let c = H.find s.channels ch in
+          if List.memq c u.joined then
+            rpl_topic u.oc ?topic:c.topic u.nick ~channel:ch
+          else
+            err_notonchannel u.oc u.nick ~channel:ch
         else
           err_notonchannel u.oc u.nick ~channel:ch
-      else
-        err_notonchannel u.oc u.nick ~channel:ch
-  | SET_TOPIC (ch, topic) ->
-      if H.mem s.channels ch then
-        let c = H.find s.channels ch in
-        if List.memq c u.joined then begin
-          c.topic <- topic; (* FIXME perms *)
-          Lwt_list.iter_p begin fun u' ->
-            set_topic u'.oc u ?topic ~channel:ch
-          end c.members
-        end else
+    | ch :: topic :: _ ->
+        let ch = tok Lexer.channel ch in
+        let topic = match topic with "" -> None | _ -> Some topic in
+        if H.mem s.channels ch then
+          let c = H.find s.channels ch in
+          if List.memq c u.joined then begin
+            c.topic <- topic; (* FIXME perms *)
+            Lwt_list.iter_p begin fun u' ->
+              set_topic u'.oc u ?topic ~channel:ch
+            end c.members
+          end else
+            err_notonchannel u.oc u.nick ~channel:ch
+        else
           err_notonchannel u.oc u.nick ~channel:ch
-      else
-        err_notonchannel u.oc u.nick ~channel:ch
-  | PING origin ->
-      pong u.oc u.nick ~msg:origin
-  | ISON nicks ->
-      let nicks = List.filter (H.mem s.users) nicks in
-      rpl_ison u.oc u.nick nicks
-  | _ ->
-      Lwt.return_unit
+  let ping s u = function
+    | [] ->
+        raise_lwt (NoOrigin)
+    | origin :: _ ->
+        pong u.oc u.nick ~msg:origin
+  let ison s u = function
+    | [] ->
+        raise_lwt (NeedMoreParams "ISON")
+    | nicks ->
+        let nicks = List.map nickname nicks in
+        let nicks = List.filter (H.mem s.users) nicks in
+        rpl_ison u.oc u.nick nicks
+end
+
+let commands : command H.t = H.create 0
+
+let _ =
+  List.iter (fun (k, v) -> H.add commands k v)
+    [ "JOIN",    Commands.join;
+      "PART",    Commands.part;
+      "PRIVMSG", Commands.privmsg;
+      "QUIT",    Commands.quit;
+      "USER",    Commands.user;
+      "TOPIC",   Commands.topic;
+      "PING",    Commands.ping;
+      "ISON",    Commands.ison ]
+
+let handle_message s u (m, params) =
+  try_lwt
+    H.find commands m s u params
+  with
+  | Not_found ->
+      raise_lwt (UnknownCommand m)
 
 let handle_registration s fd ic oc =
-  let rec loop n u =
+  let rec try_register n u =
+    match n, u with
+    | Some n, Some (u, r) ->
+        Lwt.return (n, u, r)
+    | _ ->
+        wait_register n u
+  and wait_register n u =
     lwt l = Lwt_io.read_line ic in
     Lwt_io.eprintf "<- %S\n" l >>
-    match parse_message l, n, u with
-    | NICK n, _, None ->
-        lwt () = assert_lwt (not (H.mem s.users n)) in
-        loop (Some n) None
-    | NICK n, _, Some (u, r) ->
-        Lwt.return (n, u, r)
-    | USER (u, r), None, _ ->
-        loop None (Some (u, r))
-    | USER (u, r), Some n, _ ->
-        Lwt.return (n, u, r)
-    | _, Some nick, _ ->
-        err_notregistered oc nick >>
-        loop n u
-    | _, None, _ ->
-        err_notregistered oc "*" >>
-        loop n u
+    match parse_message l with
+    | "NICK", [] ->
+        err_nonicknamegiven oc (match n with None -> "*" | Some n -> n) >>
+        try_register n u
+    | "NICK", nick :: _ ->
+        if H.mem s.users nick then
+          err_nicknameinuse oc "*" ~nick >>
+          try_register n u
+        else
+          try_register (Some nick) u
+    | "USER", u :: _ :: _ :: r :: _ ->
+        try_register n (Some (u, r))
+    | "USER", _ ->
+        err_needmoreparams oc (match n with None -> "*" | Some n -> n) ~cmd:"USER" >>
+        try_register n u
+    | _ ->
+        err_notregistered oc (match n with None -> "*" | Some n -> n) >>
+        try_register n u
     | exception _ ->
-        loop n u
+        try_register n u
   in
   let addr = match Lwt_unix.getpeername fd with Unix.ADDR_INET (addr, _) -> addr | _ -> assert false in
   lwt he = Lwt_unix.gethostbyaddr addr
-  and n, u, r = loop None None in
+  and n, u, r = try_register None None in
   let u =
     { nick = n; user = u; host = he.Unix.h_name; realname = r; joined = []; ic; oc; last_act = Unix.time () }
   in
@@ -404,25 +385,27 @@ let handle_client s fd =
     Lwt_io.eprintf "<- %S\n" l >>
     match parse_message l with
     | m ->
-        handle_message s u m >>=
-        read_message
-    | exception NoNicknameGiven ->
-        err_nonicknamegiven oc u.nick >>=
-        read_message
-    | exception (NeedMoreParams cmd) ->
-        err_needmoreparams oc u.nick ~cmd >>=
-        read_message
-    | exception (ErroneusNickname n) ->
-        err_erroneusnickname oc u.nick >>=
-        read_message
-    | exception (UnknownCommand cmd) ->
-        err_unknowncommand oc u.nick ~cmd >>=
-        read_message
-    | exception NoTextToSend ->
-        err_notexttosend oc u.nick >>=
-        read_message
-    | exception NoOrigin ->
-        err_noorigin oc u.nick >>=
+        begin
+          try_lwt
+            handle_message s u m
+          with
+          | NoNicknameGiven ->
+              err_nonicknamegiven oc u.nick
+          | NeedMoreParams cmd ->
+              err_needmoreparams oc u.nick ~cmd
+          | ErroneusNickname n ->
+              err_erroneusnickname oc u.nick
+          | UnknownCommand cmd ->
+              err_unknowncommand oc u.nick ~cmd
+          | NoTextToSend ->
+              err_notexttosend oc u.nick
+          | NoOrigin ->
+              err_noorigin oc u.nick
+          | NoRecipient cmd ->
+              err_norecipient oc u.nick ~cmd
+          | exn ->
+              Lwt_io.eprintf "Error while handling: %s\n" (Printexc.to_string exn)
+        end >>=
         read_message
     | exception exn ->
         Lwt_io.eprintf "Error while parsing: %s\n" (Printexc.to_string exn) >>=
