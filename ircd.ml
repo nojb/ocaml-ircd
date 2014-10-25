@@ -14,6 +14,10 @@ exception UnknownCommand of string
 exception NoTextToSend
 exception NoOrigin
 exception NoRecipient of string
+exception NotOnChannel of string
+exception NoSuchNick of string
+exception NoSuchChannel of string
+exception AlreadyRegistered
 
 module H = Hashtbl.Make
     (struct
@@ -217,11 +221,11 @@ module Commands = struct
         let msg = match msg with [] -> u.nick | msg :: _ -> msg in
         Lwt_list.iter_p begin fun ch ->
           if not (H.mem s.channels ch) then
-            err_nosuchchannel u.oc u.nick ~channel:ch
+            raise_lwt (NoSuchChannel ch)
           else
             let ch = H.find s.channels ch in
             if not (List.memq ch u.joined) then
-              err_notonchannel u.oc u.nick ~channel:ch.name
+              raise_lwt (NotOnChannel ch.name)
             else begin
               lwt () = Lwt_list.iter_p (fun u' -> part u'.oc u ~channel:ch.name ~msg) ch.members in
               u.joined <- List.filter (fun ch' -> ch' != ch) u.joined;
@@ -247,13 +251,13 @@ module Commands = struct
                     Lwt.return_unit
                 end ch.members
               else
-                err_nosuchnick u.oc u.nick ~target:chan
+                raise_lwt (NoSuchNick chan)
           | `Nick n ->
               if H.mem s.users n then
                 let u' = H.find s.users n in
                 privmsg u'.oc u ~target:u'.nick ~msg
               else
-                err_nosuchnick u.oc u.nick ~target:n
+                raise_lwt (NoSuchNick n)
         end targets
   let quit s u params =
     let msg = match params with [] -> "" | msg :: _ -> msg in
@@ -264,7 +268,7 @@ module Commands = struct
     error u.oc u.nick "Bye!" >>
     raise_lwt Quit
   let user _ u _ =
-    err_alreadyregistered u.oc u.nick
+    raise_lwt (AlreadyRegistered)
   let topic s u = function
     | [] ->
         raise_lwt (NeedMoreParams "TOPIC")
@@ -275,9 +279,9 @@ module Commands = struct
           if List.memq c u.joined then
             rpl_topic u.oc ?topic:c.topic u.nick ~channel:ch
           else
-            err_notonchannel u.oc u.nick ~channel:ch
+            raise_lwt (NotOnChannel ch)
         else
-          err_notonchannel u.oc u.nick ~channel:ch
+          raise_lwt (NotOnChannel ch)
     | ch :: topic :: _ ->
         let ch = tok Lexer.channel ch in
         let topic = match topic with "" -> None | _ -> Some topic in
@@ -289,9 +293,9 @@ module Commands = struct
               set_topic u'.oc u ?topic ~channel:ch
             end c.members
           end else
-            err_notonchannel u.oc u.nick ~channel:ch
+            raise_lwt (NotOnChannel ch)
         else
-          err_notonchannel u.oc u.nick ~channel:ch
+          raise_lwt (NotOnChannel ch)
   let ping s u = function
     | [] ->
         raise_lwt (NoOrigin)
@@ -403,6 +407,14 @@ let handle_client s fd =
               err_noorigin oc u.nick
           | NoRecipient cmd ->
               err_norecipient oc u.nick ~cmd
+          | NotOnChannel channel ->
+              err_notonchannel oc u.nick ~channel
+          | NoSuchNick target ->
+              err_nosuchnick oc u.nick ~target
+          | NoSuchChannel channel ->
+              err_nosuchchannel oc u.nick ~channel
+          | AlreadyRegistered ->
+              err_alreadyregistered oc u.nick
           | exn ->
               Lwt_io.eprintf "Error while handling: %s\n" (Printexc.to_string exn)
         end >>=
