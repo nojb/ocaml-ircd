@@ -27,13 +27,13 @@ let prefix = nickname (('!' user)? '@' host)?
 
 rule trailing = parse
   | ' ' ':'? (trailing as t) eof { t :: [] }
-  | eof { [] }
+  | ' '? eof { [] }
 
 and params i = parse
   | ' ' ':' (trailing as t) eof { t :: [] }
   | ' ' (middle as m)
       { m :: (if i = 14 then trailing lexbuf else params (i+1) lexbuf) }
-  | eof { [] }
+  | ' '? eof { [] }
 
 and message = parse
   | (':' prefix ' ')? (letter+ as cmd) { cmd, params 0 lexbuf }

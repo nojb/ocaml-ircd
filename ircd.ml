@@ -23,6 +23,7 @@ type message =
   | INVITE of string * string
   | PRIVMSG of [ `Channel of string | `Nick of string ] list * string
   | PING of string
+  | ISON of string list
 
 exception ErroneusNickname of string
 exception NoNicknameGiven
@@ -110,6 +111,10 @@ let parse_message l =
       raise NoOrigin
   | "PING", origin :: _ ->
       PING origin
+  | "ISON", [] ->
+      raise (NeedMoreParams command)
+  | "ISON", _ :: _ ->
+      ISON (List.map nickname params)
   | _ ->
       raise (UnknownCommand command)
 
@@ -253,6 +258,9 @@ let pong oc nick =
 let err_noorigin oc nick =
   Lwt_io.fprintf oc ":%s 409 %s :No origin specified\r\n" my_hostname nick
 
+let rpl_ison oc nick nicks =
+  Lwt_io.fprintf oc ":%s 303 %s :%s\r\n" my_hostname nick (String.concat " " nicks)
+
 exception Quit
 
 let handle_message s u m =
@@ -339,12 +347,16 @@ let handle_message s u m =
         err_notonchannel u.oc u.nick ~channel:ch
   | PING origin ->
       pong u.oc u.nick
+  | ISON nicks ->
+      let nicks = List.filter (H.mem s.users) nicks in
+      rpl_ison u.oc u.nick nicks
   | _ ->
       Lwt.return_unit
 
 let handle_registration s fd ic oc =
   let rec loop n u =
     lwt l = Lwt_io.read_line ic in
+    Lwt_io.eprintf "<- %S\n" l >>
     match parse_message l, n, u with
     | NICK n, _, None ->
         lwt () = assert_lwt (not (H.mem s.users n)) in
@@ -389,6 +401,7 @@ let handle_client s fd =
   let rec read_message () =
     lwt () = Lwt_io.flush oc in
     lwt l = Lwt_io.read_line ic in
+    Lwt_io.eprintf "<- %S\n" l >>
     match parse_message l with
     | m ->
         handle_message s u m >>=
@@ -411,8 +424,9 @@ let handle_client s fd =
     | exception NoOrigin ->
         err_noorigin oc u.nick >>=
         read_message
-    | exception _ ->
-        read_message ()
+    | exception exn ->
+        Lwt_io.eprintf "Error while parsing: %s\n" (Printexc.to_string exn) >>=
+        read_message
   in
   Lwt.catch read_message begin function
     | Quit ->
