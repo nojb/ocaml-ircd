@@ -22,12 +22,14 @@ type message =
   | LIST of string list * string option
   | INVITE of string * string
   | PRIVMSG of [ `Channel of string | `Nick of string ] list * string
+  | PING of string
 
 exception ErroneusNickname of string
 exception NoNicknameGiven
 exception NeedMoreParams of string
 exception UnknownCommand of string
 exception NoTextToSend
+exception NoOrigin
 
 let nickname n =
   try
@@ -104,6 +106,10 @@ let parse_message l =
   | "PRIVMSG", msgtarget :: texttobesent :: _ ->
       let msgtarget = tok Lexer.msgtarget msgtarget in
       PRIVMSG (msgtarget, texttobesent)
+  | "PING", [] ->
+      raise NoOrigin
+  | "PING", origin :: _ ->
+      PING origin
   | _ ->
       raise (UnknownCommand command)
 
@@ -241,6 +247,9 @@ let err_notonchannel oc nick ~channel =
 let part oc u ~channel ~msg =
   Lwt_io.fprintf oc ":%s!%s@%s PART %s %s\r\n" u.nick u.user u.host channel msg
 
+let pong oc nick =
+  Lwt_io.fprintf oc ":%s PONG %s\r\n" my_hostname my_hostname
+
 exception Quit
 
 let handle_message s u m =
@@ -325,6 +334,8 @@ let handle_message s u m =
           err_notonchannel u.oc u.nick ~channel:ch
       else
         err_notonchannel u.oc u.nick ~channel:ch
+  | PING origin ->
+      pong u.oc u.nick
   | _ ->
       Lwt.return_unit
 

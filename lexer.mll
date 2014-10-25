@@ -62,3 +62,6 @@ and msgtarget2 = parse
 and msgtarget = parse
   | (channel as c) { `Channel c :: msgtarget2 lexbuf }
   | nickname as n ('!' user '@' host)? { `Nick n :: msgtarget2 lexbuf }
+
+and servername = parse
+  | servername as s { s }
