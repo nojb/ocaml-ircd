@@ -250,6 +250,9 @@ let part oc u ~channel ~msg =
 let pong oc nick =
   Lwt_io.fprintf oc ":%s PONG %s\r\n" my_hostname my_hostname
 
+let err_noorigin oc nick =
+  Lwt_io.fprintf oc ":%s 409 %s :No origin specified\r\n" my_hostname nick
+
 exception Quit
 
 let handle_message s u m =
@@ -404,6 +407,9 @@ let handle_client s fd =
         read_message
     | exception NoTextToSend ->
         err_notexttosend oc u.nick >>=
+        read_message
+    | exception NoOrigin ->
+        err_noorigin oc u.nick >>=
         read_message
     | exception _ ->
         read_message ()
