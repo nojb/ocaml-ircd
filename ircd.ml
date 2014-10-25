@@ -443,6 +443,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       | _ ->
           wait_register n u
     and wait_register n u =
+      lwt () = C.flush io in
       lwt l = read_line io in
       log con "<- %S\n" l;
       match parse_message l with
