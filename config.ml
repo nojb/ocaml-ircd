@@ -22,6 +22,6 @@ let stack =
   | `Socket, _ -> socket_stackv4 default_console [Ipaddr.V4.any]
 
 let () =
-  add_to_opam_packages ["stringext"; "tcpip"];
-  add_to_ocamlfind_libraries ["stringext"; "tcpip.channel"];
+  add_to_opam_packages ["stringext"; "tcpip"; "dns"];
+  add_to_ocamlfind_libraries ["stringext"; "tcpip.channel"; "dns"; "dns.mirage"];
   register "ircd" [ handler $ default_console $ stack ]

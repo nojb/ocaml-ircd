@@ -414,6 +414,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
   module Err = Commands.Err
   module Act = Commands.Act
   module Rpl = Commands.Rpl
+  module Dns = Dns_resolver_mirage.Make (OS.Time) (SV4)
 
   open S
 
@@ -441,7 +442,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
   let log con fmt =
     Printf.ksprintf (fun s -> ignore (Con.log_s con s)) fmt
 
-  let handle_registration con s io =
+  let handle_registration con dns s io =
     let rec try_register n u =
       match n, u with
       | Some n, Some (u, r) ->
@@ -472,11 +473,11 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       | exception _ ->
           try_register n u
     in
-    (* let addr = match Lwt_unix.getpeername fd with Unix.ADDR_INET (addr, _) -> addr | _ -> assert false in *)
-    (* lwt he = Lwt_unix.gethostbyaddr addr *)
-    lwt n, u, r = try_register None None in
+    let addr, _ = SV4.TCPV4.get_dest (C.to_flow io) in
+    (* lwt sl = Dns.gethostbyaddr dns addr and n, u, r = try_register None None in *)
+    lwt sl = Lwt.return ["*"] and n, u, r = try_register None None in
     let u =
-      { nick = n; user = u; host = "test" (* he.Unix.h_name *);
+      { nick = n; user = u; host = (match sl with n :: _ -> n | [] -> "*");
         realname = r; joined = []; io; last_act = Unix.time () }
     in
     Rpl.welcome io u.nick ~message:"Welcome to the Mirage IRC Server";
@@ -484,9 +485,9 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     H.add s.users n u;
     Lwt.return u
 
-  let handle_client con s flow =
+  let handle_client con dns s flow =
     let io = C.create flow in
-    lwt u = handle_registration con s io in
+    lwt u = handle_registration con dns s io in
     let rec read_message () =
       lwt () = C.flush io in
       lwt l = read_line io in
@@ -548,6 +549,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
 
   let start con sv4 =
     let s = { channels = H.create 0; users = H.create 0 } in
-    SV4.listen_tcpv4 sv4 ~port:6667 (handle_client con s);
+    let dns = Dns.create sv4 in
+    SV4.listen_tcpv4 sv4 ~port:6667 (handle_client con dns s);
     SV4.listen sv4
 end
