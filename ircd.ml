@@ -488,8 +488,8 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         raise exn
     in
     try
-      let cmd = try H.find Commands.commands with Not_found -> raise (UnknownCommand m) in
-      cmd m s u params
+      let cmd = try H.find Commands.commands m with Not_found -> raise (UnknownCommand m) in
+      cmd s u params
     with
     | NoNicknameGiven ->
         Err.nonicknamegiven u.io u.nick
