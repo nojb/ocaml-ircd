@@ -204,7 +204,7 @@ end
 module type ACT = sig
   val join    : State.user -> channel:string -> string
   val quit    : State.user -> msg:string -> string
-  val error   : string -> msg:string -> string
+  val error   : msg:string -> string
   val privmsg : State.user -> target:string -> msg:string -> string
   val topic   : State.user -> ?topic:string -> channel:string -> string
   val part    : State.user -> channel:string -> msg:string -> string
@@ -220,8 +220,8 @@ module Act : ACT = struct
   let quit u ~msg =
     Printf.sprintf ":%s!%s@%s QUIT :%s\r\n" u.nick u.user u.host msg
 
-  let error nick ~msg =
-    Printf.sprintf ":%s ERROR %s :%s\r\n" my_hostname nick msg
+  let error ~msg =
+    Printf.sprintf "ERROR :%s\r\n" msg
 
   let privmsg u ~target ~msg =
     Printf.sprintf ":%s!%s@%s PRIVMSG %s :%s\r\n" u.nick u.user u.host target msg
@@ -323,13 +323,13 @@ module Commands = struct
         end targets
 
   let quit s u params =
-    let msg = match params with [] -> "" | msg :: _ -> msg in
+    let msg = match params with [] -> "Client Quit" | msg :: _ -> msg in
     H.remove s.users u.nick;
     List.iter begin fun ch ->
       List.iter (fun u' -> u'.out (Act.quit u ~msg)) ch.members;
       ch.members <- List.filter (fun u' -> u' != u) ch.members
     end u.joined;
-    u.out (Act.error u.nick "Bye!");
+    u.out (Act.error ~msg:(Printf.sprintf "Closing link: %s (Client Quit)" u.host));
     raise Quit
 
   let user _ u _ =
@@ -499,7 +499,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     let rec read_loop () =
       let rec loop () =
         lwt l = read_line ch in
-        log "<- %S" l;
+        log "<- %s" l;
         inp (Some l);
         loop ()
       in
@@ -508,7 +508,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       with
       | exn ->
           log "Error during reading: %s" (Printexc.to_string exn);
-          inp None;
+          Lwt.wakeup io_err_signal ();
           Lwt.return_unit
     in
     let rec write_loop () =
@@ -516,7 +516,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         lwt str = Lwt_stream.next outs in
         Ch.write_string ch str 0 (String.length str);
         lwt () = Ch.flush ch in
-        log "-> %S" str;
+        log "-> %s" str;
         loop ()
       in
       try_lwt
@@ -524,43 +524,43 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       with
       | exn ->
           log "Error during writing: %s" (Printexc.to_string exn);
-          out None;
+          Lwt.wakeup io_err_signal ();
           Lwt.return_unit
     in
-    let client_loop () = Lwt.pick [read_loop (); write_loop ()] >> Lwt.wrap1 Lwt.wakeup io_err_signal in
-    Lwt.async client_loop;
-    lwt u = handle_registration dns s (fst (SV4.TCPV4.get_dest flow)) inps (fun x -> out (Some x)) in
-    try_lwt
-      Lwt.pick [ Lwt_stream.iter (handle_message s u) inps ; io_err ]
-    with
-    | Quit ->
-        SV4.TCPV4.close flow
-    | IOError ->
-        handle_quit s u ~msg:"Connection closed by peer";
-        SV4.TCPV4.close flow
-    | exn ->
-        log "Error while handling: %s" (Printexc.to_string exn);
-        handle_quit s u ~msg:"Unhandled exception";
-        SV4.TCPV4.close flow
-    (* with *)
-    (* | Quit -> *)
-    (*     H.remove s.users u.nick; *)
-    (*     List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined; *)
-    (*     SV4.TCPV4.close flow *)
-    (* | _ -> *)
-    (*     H.remove s.users u.nick; *)
-    (*     List.iter (fun ch -> ch.members <- List.filter (fun u' -> u' != u) ch.members) u.joined; *)
-    (*     List.iter begin fun ch -> *)
-    (*       List.iter begin fun u' -> *)
-    (*         if u' != u then u'.out (Act.quit u ~msg:"Connection closed by peer") *)
-    (*       end ch.members *)
-    (*     end u.joined; *)
-    (*     SV4.TCPV4.close flow *)
+    Lwt.async (fun () -> Lwt.pick [read_loop (); write_loop ()]);
+    lwt u =
+      try_lwt
+        lwt u = handle_registration dns s (fst (SV4.TCPV4.get_dest flow)) inps (fun x -> out (Some x)) in
+        Lwt.return (`Ok u)
+      with
+      | _ -> Lwt.return `Fail
+    in
+    lwt () =
+      match u with
+      | `Ok u ->
+          begin
+            try_lwt
+              Lwt.pick [ Lwt_stream.iter (handle_message s u) inps ; io_err ]
+            with
+            | Quit ->
+                Ch.flush ch
+            | IOError ->
+                handle_quit s u ~msg:"Remote host closed the connection";
+                Lwt.return_unit
+            | exn ->
+                log "Error while handling: %s" (Printexc.to_string exn);
+                handle_quit s u ~msg:(Printf.sprintf "Unhandled exception: %s" (Printexc.to_string exn));
+                Lwt.return_unit
+          end
+      | `Fail ->
+          Lwt.return_unit
+    in
+    SV4.TCPV4.close flow
 
-  let start con sv4 =
-    logger := Con.log con;
-    let s = { channels = H.create 0; users = H.create 0 } in
-    let dns = Dns.create sv4 in
-    SV4.listen_tcpv4 sv4 ~port:6667 (handle_client dns s);
-    SV4.listen sv4
+let start con sv4 =
+  logger := Con.log con;
+  let s = { channels = H.create 0; users = H.create 0 } in
+  let dns = Dns.create sv4 in
+  SV4.listen_tcpv4 sv4 ~port:6667 (handle_client dns s);
+  SV4.listen sv4
 end
