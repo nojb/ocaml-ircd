@@ -65,3 +65,27 @@ and msgtarget = parse
 
 and servername = parse
   | servername as s { s }
+
+and mask = parse
+  | '?'
+      { let g = mask lexbuf in fun s i -> g s (i+1) }
+  | '*'
+      { let g = mask lexbuf in
+        let rec tryit s i =
+          if i >= String.length s then
+            g s i
+          else
+            g s i || tryit s (i+1)
+        in
+        tryit }
+  | [^'\000''?''*']+ as str
+      { let g = mask lexbuf in
+        fun s i ->
+          i + String.length str <= String.length s &&
+          String.lowercase str = String.lowercase (String.sub s i (String.length str)) &&
+          g s (i + String.length str) }
+  | '\\' ('?' | '*' as c)
+      { let g = mask lexbuf in
+        fun s i -> i < String.length s && s.[i] = c && g s (i+1) }
+  | eof
+      { fun _ _ -> true }
