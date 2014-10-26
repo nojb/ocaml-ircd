@@ -390,6 +390,10 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
 
   let (>>=) = Lwt.(>>=)
 
+  let logger = ref (fun _ -> ())
+
+  let log fmt = Printf.ksprintf !logger fmt
+
   let read_line io =
     lwt cs = Ch.read_line io in
     let str = String.create (Cstruct.lenv cs) in
@@ -402,10 +406,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     loop 0 cs;
     Lwt.return str
 
-  let log con fmt =
-    Printf.ksprintf (fun s -> ignore (Con.log_s con s)) fmt
-
-  let handle_registration con dns s inps out =
+  let handle_registration dns s inps out =
     let rec try_register n u =
       match n, u with
       | Some n, Some (u, r) ->
@@ -447,12 +448,12 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     H.add s.users n u;
     Lwt.return u
 
-  let handle_message con s u l =
+  let handle_message s u l =
     let m, params =
       try
         parse_message l
       with exn ->
-        log con "Error while parsing: %s" (Printexc.to_string exn);
+        log "Error while parsing: %s (%s)" l (Printexc.to_string exn);
         raise exn
     in
     try
@@ -491,14 +492,14 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       ch.members <- List.filter (fun u' -> u' != u) ch.members
     end u.joined
 
-  let handle_client con dns s flow =
+  let handle_client dns s flow =
     let inps, inp = Lwt_stream.create () in
     let outs, out = Lwt_stream.create () in
     let ch = Ch.create flow in
     let rec read_loop () =
       let rec loop () =
         lwt l = read_line ch in
-        log con "<- %S" l;
+        log "<- %S" l;
         inp (Some l);
         loop ()
       in
@@ -506,7 +507,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         loop ()
       with
       | exn ->
-          log con "Error during reading: %s" (Printexc.to_string exn);
+          log "Error during reading: %s" (Printexc.to_string exn);
           inp None;
           Lwt.return_unit
     in
@@ -515,23 +516,23 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         lwt str = Lwt_stream.next outs in
         Ch.write_string ch str 0 (String.length str);
         lwt () = Ch.flush ch in
-        log con "-> %S" str;
+        log "-> %S" str;
         loop ()
       in
       try_lwt
         loop ()
       with
       | exn ->
-          log con "Error during writing: %s" (Printexc.to_string exn);
+          log "Error during writing: %s" (Printexc.to_string exn);
           out None;
           Lwt.return_unit
     in
     let io_err, io_err_signal = Lwt.wait () in
     let client_loop () = Lwt.pick [read_loop (); write_loop ()] >> Lwt.wrap1 Lwt.wakeup io_err_signal in
     Lwt.async client_loop;
-    lwt u = handle_registration con dns s inps (fun x -> out (Some x)) in
+    lwt u = handle_registration dns s inps (fun x -> out (Some x)) in
     try_lwt
-      Lwt.pick [ Lwt_stream.iter (handle_message con s u) inps ; io_err >> raise_lwt IOError ]
+      Lwt.pick [ Lwt_stream.iter (handle_message s u) inps ; io_err >> raise_lwt IOError ]
     with
     | Quit ->
         SV4.TCPV4.close flow
@@ -539,7 +540,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         handle_quit s u ~msg:"Connection closed by peer";
         SV4.TCPV4.close flow
     | exn ->
-        log con "Error while handling: %s" (Printexc.to_string exn);
+        log "Error while handling: %s" (Printexc.to_string exn);
         handle_quit s u ~msg:"Unhandled exception";
         SV4.TCPV4.close flow
     (* with *)
@@ -558,8 +559,9 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     (*     SV4.TCPV4.close flow *)
 
   let start con sv4 =
+    logger := Con.log con;
     let s = { channels = H.create 0; users = H.create 0 } in
     let dns = Dns.create sv4 in
-    SV4.listen_tcpv4 sv4 ~port:6667 (handle_client con dns s);
+    SV4.listen_tcpv4 sv4 ~port:6667 (handle_client dns s);
     SV4.listen sv4
 end
