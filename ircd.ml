@@ -557,10 +557,10 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     in
     SV4.TCPV4.close flow
 
-let start con sv4 =
-  logger := Con.log con;
-  let s = { channels = H.create 0; users = H.create 0 } in
-  let dns = Dns.create sv4 in
-  SV4.listen_tcpv4 sv4 ~port:6667 (handle_client dns s);
-  SV4.listen sv4
+  let start con sv4 =
+    logger := Con.log con;
+    let s = { channels = H.create 0; users = H.create 0 } in
+    let dns = Dns.create sv4 in
+    SV4.listen_tcpv4 sv4 ~port:6667 (handle_client dns s);
+    SV4.listen sv4
 end
