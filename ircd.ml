@@ -87,57 +87,52 @@ let my_hostname =
 
 module type RPL = sig
   val welcome : string -> message:string -> string
-  val motd : string -> motd:string list -> string
+  val motd : string -> motd:string list -> string list
   val topic : string -> ?topic:string -> channel:string -> string
-  val namereply : string -> channel:string -> nicks:string list -> string
-  val ison : string -> nicks:string list -> string
+  val namereply : string -> channel:string -> nicks:string list -> string list
+  val ison : string -> nicks:string list -> string list
 end
 
 module Rpl : RPL = struct
   let welcome nick ~message =
-    Printf.sprintf ":%s 001 %s :%s\r\n" my_hostname nick message
+    Printf.sprintf ":%s 001 %s :%s" my_hostname nick message
 
   let motd nick ~motd =
-    let b = Buffer.create 0 in
-    Printf.bprintf b ":%s 375 %s :- Mirage IRC Message of the day - \r\n" my_hostname nick;
-    List.iter (Printf.bprintf b ":%s 372 %s :- %s\r\n" my_hostname nick) motd;
-    Printf.bprintf b ":%s 376 %s :End of /MOTD command\r\n" my_hostname nick;
-    Buffer.contents b
+    let first = Printf.sprintf ":%s 375 %s :- Mirage IRC Message of the day - " my_hostname nick in
+    first :: List.fold_right (fun l xs -> Printf.sprintf ":%s 372 %s :- %s" my_hostname nick l :: xs) motd
+      [Printf.sprintf ":%s 376 %s :End of /MOTD command" my_hostname nick]
 
   let topic nick ?topic ~channel =
     match topic with
     | None ->
-        Printf.sprintf ":%s 331 %s %s :No topic is set\r\n" my_hostname nick channel
+        Printf.sprintf ":%s 331 %s %s :No topic is set" my_hostname nick channel
     | Some topic ->
-        Printf.sprintf ":%s 332 %s %s :%s\r\n" my_hostname nick channel topic
+        Printf.sprintf ":%s 332 %s %s :%s" my_hostname nick channel topic
 
   let namereply nick ~channel ~nicks =
     let b = Buffer.create 0 in
-    let rec loop start nicks =
+    let rec loop nicks rest =
       Printf.bprintf b ":%s 353 %s = %s :" my_hostname nick channel;
-      loop' start nicks
-    and loop' start = function
+      loop' nicks rest
+    and loop' nicks rest =
+      match nicks with
       | nick :: nicks ->
-          if Buffer.length b - start + String.length nick + 1 <= 510 then begin
+          if Buffer.length b + String.length nick + 1 <= 510 then begin
             Buffer.add_char b ' ';
             Buffer.add_string b nick;
-            loop' start nicks
+            loop' nicks rest
           end else begin
-            Buffer.add_string b "\r\n";
-            loop (Buffer.length b) nicks
+            let l = Buffer.contents b in
+            Buffer.clear b;
+            l :: (match nicks with [] -> rest | _ -> loop nicks rest)
           end
       | [] ->
-          Buffer.add_string b "\r\n";
-          Printf.bprintf b ":%s 366 %s %s :End of /NAMES list\r\n" my_hostname nick channel
+          Buffer.contents b :: rest
     in
-    loop 0 nicks;
-    Buffer.contents b
-
-    (* Printf.sprintf ":%s 353 %s = %s :%s\r\n" my_hostname nick channel (String.concat " " nicks); *)
-    (* Printf.sprintf ":%s 366 %s %s :End of /NAMES list\r\n" my_hostname nick channel *)
+    loop nicks [Printf.sprintf ":%s 366 %s %s :End of /NAMES list" my_hostname nick channel]
 
   let ison nick ~nicks =
-    Printf.sprintf ":%s 303 %s :%s\r\n" my_hostname nick (String.concat " " nicks)
+    [Printf.sprintf ":%s 303 %s :%s" my_hostname nick (String.concat " " nicks)]
 end
 
 module type ERR = sig
@@ -159,46 +154,46 @@ end
 
 module Err : ERR = struct
   let notregistered nick =
-    Printf.sprintf ":%s 451 %s :You have not registered\r\n" my_hostname nick
+    Printf.sprintf ":%s 451 %s :You have not registered" my_hostname nick
 
   let useronchannel nick ~channel =
-    Printf.sprintf ":%s 443 %s %s :is already on channel\r\n" my_hostname nick channel
+    Printf.sprintf ":%s 443 %s %s :is already on channel" my_hostname nick channel
 
   let notexttosend nick =
-    Printf.sprintf ":%s 412 %s :No text to send\r\n" my_hostname nick
+    Printf.sprintf ":%s 412 %s :No text to send" my_hostname nick
 
   let nonicknamegiven nick =
-    Printf.sprintf ":%s 431 %s :No nickname given\r\n" my_hostname nick
+    Printf.sprintf ":%s 431 %s :No nickname given" my_hostname nick
 
   let needmoreparams nick ~cmd =
-    Printf.sprintf ":%s 461 %s %s :Not enough parameters\r\n" my_hostname nick cmd
+    Printf.sprintf ":%s 461 %s %s :Not enough parameters" my_hostname nick cmd
 
   let erroneusnickname nick =
-    Printf.sprintf ":%s 432 %s :Erroneus nickname\r\n" my_hostname nick
+    Printf.sprintf ":%s 432 %s :Erroneus nickname" my_hostname nick
 
   let unknowncommand nick ~cmd =
-    Printf.sprintf ":%s 421 %s %s :Unknown command\r\n" my_hostname nick cmd
+    Printf.sprintf ":%s 421 %s %s :Unknown command" my_hostname nick cmd
 
   let nosuchnick nick ~target =
-    Printf.sprintf ":%s 401 %s %s :No such nick/channel\r\n" my_hostname nick target
+    Printf.sprintf ":%s 401 %s %s :No such nick/channel" my_hostname nick target
 
   let alreadyregistered nick =
-    Printf.sprintf ":%s 462 %s :Unauthorized command (already registered)\r\n" my_hostname nick
+    Printf.sprintf ":%s 462 %s :Unauthorized command (already registered)" my_hostname nick
 
   let nosuchchannel nick ~channel =
-    Printf.sprintf ":%s 403 %s %s :No such channel\r\n" my_hostname nick channel
+    Printf.sprintf ":%s 403 %s %s :No such channel" my_hostname nick channel
 
   let notonchannel nick ~channel =
-    Printf.sprintf ":%s 442 %s %s :You're not on that channel\r\n" my_hostname nick channel
+    Printf.sprintf ":%s 442 %s %s :You're not on that channel" my_hostname nick channel
 
   let noorigin nick =
-    Printf.sprintf ":%s 409 %s :No origin specified\r\n" my_hostname nick
+    Printf.sprintf ":%s 409 %s :No origin specified" my_hostname nick
 
   let norecipient nick ~cmd =
-    Printf.sprintf ":%s 411 %s :No recipient given (%s)\r\n" my_hostname nick cmd
+    Printf.sprintf ":%s 411 %s :No recipient given (%s)" my_hostname nick cmd
 
   let nicknameinuse n ~nick =
-    Printf.sprintf ":%s 433 %s %s :Nickname is already in use\r\n" my_hostname n nick
+    Printf.sprintf ":%s 433 %s %s :Nickname is already in use" my_hostname n nick
 end
 
 module type ACT = sig
@@ -215,29 +210,29 @@ module Act : ACT = struct
   open State
 
   let join u ~channel =
-    Printf.sprintf ":%s!%s@%s JOIN %s\r\n" u.nick u.user u.host channel
+    Printf.sprintf ":%s!%s@%s JOIN %s" u.nick u.user u.host channel
 
   let quit u ~msg =
-    Printf.sprintf ":%s!%s@%s QUIT :%s\r\n" u.nick u.user u.host msg
+    Printf.sprintf ":%s!%s@%s QUIT :%s" u.nick u.user u.host msg
 
   let error ~msg =
-    Printf.sprintf "ERROR :%s\r\n" msg
+    Printf.sprintf "ERROR :%s" msg
 
   let privmsg u ~target ~msg =
-    Printf.sprintf ":%s!%s@%s PRIVMSG %s :%s\r\n" u.nick u.user u.host target msg
+    Printf.sprintf ":%s!%s@%s PRIVMSG %s :%s" u.nick u.user u.host target msg
 
   let topic u ?topic ~channel =
     match topic with
     | None ->
-        Printf.sprintf ":%s!%s@%s TOPIC %s :\r\n" u.nick u.user u.host channel
+        Printf.sprintf ":%s!%s@%s TOPIC %s :" u.nick u.user u.host channel
     | Some topic ->
-        Printf.sprintf ":%s!%s@%s TOPIC %s :%s\r\n" u.nick u.user u.host channel topic
+        Printf.sprintf ":%s!%s@%s TOPIC %s :%s" u.nick u.user u.host channel topic
 
   let part u ~channel ~msg =
-    Printf.sprintf ":%s!%s@%s PART %s %s\r\n" u.nick u.user u.host channel msg
+    Printf.sprintf ":%s!%s@%s PART %s %s" u.nick u.user u.host channel msg
 
   let pong nick ~msg =
-    Printf.sprintf ":%s PONG %s\r\n" my_hostname msg
+    Printf.sprintf ":%s PONG %s" my_hostname msg
 end
 
 exception Quit
@@ -286,7 +281,7 @@ module Commands = struct
           List.iter (fun u' -> u'.out (Act.join u ~channel:ch.name)) ch.members;
           u.out (Rpl.topic ?topic:ch.topic u.nick ~channel:ch.name);
           let nicks = List.map (fun u -> u.nick) ch.members in
-          u.out (Rpl.namereply u.nick ~channel:ch.name ~nicks)
+          List.iter u.out (Rpl.namereply u.nick ~channel:ch.name ~nicks)
         end chl
 
   let part s u = function
@@ -365,7 +360,7 @@ module Commands = struct
     | nicks ->
         let nicks = List.map nickname nicks in
         let nicks = List.filter (H.mem s.users) nicks in
-        u.out (Rpl.ison u.nick nicks)
+        List.iter u.out (Rpl.ison u.nick nicks)
 
   let commands : (State.server -> State.user -> string list -> unit) H.t = H.create 0
 
@@ -443,7 +438,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         realname = r; joined = []; out; last_act = Unix.time () }
     in
     u.out (Rpl.welcome u.nick ~message:"Welcome to the Mirage IRC Server");
-    u.out (Rpl.motd u.nick ~motd);
+    List.iter u.out (Rpl.motd u.nick ~motd);
     H.add s.users n u;
     Lwt.return u
 
@@ -515,6 +510,8 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       let rec loop () =
         lwt str = Lwt_stream.next outs in
         Ch.write_string ch str 0 (String.length str);
+        Ch.write_char ch '\r';
+        Ch.write_char ch '\n';
         lwt () = Ch.flush ch in
         log "-> %s" str;
         loop ()
