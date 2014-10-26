@@ -91,6 +91,8 @@ module type RPL = sig
   val topic : string -> ?topic:string -> channel:string -> string
   val namereply : string -> channel:string -> nicks:string list -> string list
   val ison : string -> nicks:string list -> string list
+  val list : string -> channel:string -> visible:int -> ?topic:string -> string
+  val listend : string -> string
 end
 
 module Rpl : RPL = struct
@@ -131,8 +133,17 @@ module Rpl : RPL = struct
     in
     loop nicks [Printf.sprintf ":%s 366 %s %s :End of /NAMES list" my_hostname nick channel]
 
+  (* val split_lines : header:string -> sep:string -> string list -> string list *)
+
   let ison nick ~nicks =
     [Printf.sprintf ":%s 303 %s :%s" my_hostname nick (String.concat " " nicks)]
+
+  let list nick ~channel ~visible ?topic =
+    Printf.sprintf "%s 322 %s %s %d :%s" my_hostname nick channel visible
+      (match topic with None -> "No topic is set" | Some t -> t)
+
+  let listend nick =
+    Printf.sprintf "%s 323 %s :End of /LIST" my_hostname nick
 end
 
 module type ERR = sig
@@ -362,6 +373,24 @@ module Commands = struct
         let nicks = List.filter (H.mem s.users) nicks in
         List.iter u.out (Rpl.ison u.nick nicks)
 
+  (* FIXME should continue processing on exception - in fact, should not use exceptions,
+     but some monadic framework ... *)
+  (* FIXME handle LIST STOP *)
+  let list s u = function
+    | [] ->
+        H.iter begin fun _ ch ->
+          u.out (Rpl.list u.nick ~channel:ch.name ~visible:(List.length ch.members) ?topic:ch.topic)
+        end s.channels;
+        u.out (Rpl.listend u.nick)
+    | chl :: _ ->
+        let chl = tok Lexer.channel_list chl in
+        List.iter begin fun ch ->
+          if not (H.mem s.channels ch) then raise (NoSuchNick ch);
+          let ch = H.find s.channels ch in
+          u.out (Rpl.list u.nick ~channel:ch.name ~visible:(List.length ch.members) ?topic:ch.topic)
+        end chl;
+        u.out (Rpl.listend u.nick)
+
   let commands : (State.server -> State.user -> string list -> unit) H.t = H.create 0
 
   let _ =
@@ -373,7 +402,8 @@ module Commands = struct
         "USER",    user;
         "TOPIC",   topic;
         "PING",    ping;
-        "ISON",    ison ]
+        "ISON",    ison;
+        "LIST",    list ]
 
   let find name =
     try H.find commands name with Not_found -> raise (UnknownCommand name)
