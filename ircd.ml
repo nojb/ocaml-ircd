@@ -21,17 +21,17 @@
    SOFTWARE. *)
 
 exception ErroneusNickname of string
-exception NoNicknameGiven
-exception NeedMoreParams of string
-exception UnknownCommand of string
-exception NoTextToSend
-exception NoOrigin
-exception NoRecipient of string
-exception NotOnChannel of string
-exception NoSuchNick of string
-exception NoSuchChannel of string
-exception AlreadyRegistered
-exception UserOnChannel of string
+(* exception NoNicknameGiven *)
+(* exception NeedMoreParams of string *)
+(* exception UnknownCommand of string *)
+(* exception NoTextToSend *)
+(* exception NoOrigin *)
+(* exception NoRecipient of string *)
+(* exception NotOnChannel of string *)
+(* exception NoSuchNick of string *)
+(* exception NoSuchChannel of string *)
+(* exception AlreadyRegistered *)
+(* exception UserOnChannel of string *)
 
 exception IOError
 
@@ -286,7 +286,7 @@ module Commands = struct
 
   let join s u = function
     | [] ->
-        raise (NeedMoreParams "JOIN")
+        u.out (Err.needmoreparams u.nick ~cmd:"JOIN")
     | "0" :: params ->
         let msg = match params with msg :: _ -> msg | [] -> u.nick in
         List.iter begin fun ch ->
@@ -298,46 +298,57 @@ module Commands = struct
         let chl = tok Lexer.channel_list chl in
         let chl = List.map (get_channel s) chl in
         List.iter begin fun ch ->
-          if List.memq u ch.members then raise (UserOnChannel ch.name);
-          ch.members <- u :: ch.members;
-          u.joined <- ch :: u.joined;
-          List.iter (fun u' -> u'.out (Act.join u ~channel:ch.name)) ch.members;
-          u.out (Rpl.topic ?topic:ch.topic u.nick ~channel:ch.name);
-          let nicks = List.map (fun u -> u.nick) ch.members in
-          List.iter u.out (Rpl.namereply u.nick ~channel:ch.name ~nicks)
+          if List.memq u ch.members then
+            u.out (Err.useronchannel u.nick ~channel:ch.name)
+          else begin
+            ch.members <- u :: ch.members;
+            u.joined <- ch :: u.joined;
+            List.iter (fun u' -> u'.out (Act.join u ~channel:ch.name)) ch.members;
+            u.out (Rpl.topic ?topic:ch.topic u.nick ~channel:ch.name);
+            let nicks = List.map (fun u -> u.nick) ch.members in
+            List.iter u.out (Rpl.namereply u.nick ~channel:ch.name ~nicks)
+          end
         end chl
 
   let part s u = function
     | [] ->
-        raise (NeedMoreParams "PART")
+        u.out (Err.needmoreparams u.nick ~cmd:"PART")
     | chl :: msg ->
         let chl = tok Lexer.channel_list chl in
         let msg = match msg with [] -> u.nick | msg :: _ -> msg in
         List.iter begin fun ch ->
-          if not (H.mem s.channels ch) then raise (NoSuchChannel ch);
-          let ch = H.find s.channels ch in
-          if not (List.memq ch u.joined) then raise (NotOnChannel ch.name);
-          List.iter (fun u' -> u'.out (Act.part u ~channel:ch.name ~msg)) ch.members;
-          u.joined <- List.filter (fun ch' -> ch' != ch) u.joined;
-          ch.members <- List.filter (fun u' -> u' != u) ch.members
+          if H.mem s.channels ch then begin
+            let ch = H.find s.channels ch in
+            if List.memq ch u.joined then begin
+              List.iter (fun u' -> u'.out (Act.part u ~channel:ch.name ~msg)) ch.members;
+              u.joined <- List.filter (fun ch' -> ch' != ch) u.joined;
+              ch.members <- List.filter (fun u' -> u' != u) ch.members
+            end else
+              u.out (Err.notonchannel u.nick ~channel:ch.name)
+          end else
+            u.out (Err.nosuchchannel u.nick ~channel:ch)
         end chl
 
   let privmsg s u = function
     | [] ->
-        raise (NoRecipient "PRIVMSG")
+        u.out (Err.norecipient u.nick ~cmd:"PRIVMSG")
     | _ :: [] ->
-        raise (NoTextToSend)
+        u.out (Err.notexttosend u.nick)
     | msgtarget :: msg :: _ ->
         let targets = tok Lexer.msgtarget msgtarget in
         List.iter begin function
           | `Channel chan ->
-              if not (H.mem s.channels chan) then raise (NoSuchNick chan);
-              let ch = H.find s.channels chan in
-              List.iter (fun u' -> if u != u' then u'.out (Act.privmsg u ~target:chan ~msg)) ch.members
+              if H.mem s.channels chan then
+                let ch = H.find s.channels chan in
+                List.iter (fun u' -> if u != u' then u'.out (Act.privmsg u ~target:chan ~msg)) ch.members
+              else
+                u.out (Err.nosuchnick u.nick ~target:chan)
           | `Nick n ->
-              if not (H.mem s.users n) then raise (NoSuchNick n);
-              let u' = H.find s.users n in
-              u'.out (Act.privmsg u ~target:u'.nick ~msg)
+              if H.mem s.users n then
+                let u' = H.find s.users n in
+                u'.out (Act.privmsg u ~target:u'.nick ~msg)
+              else
+                u.out (Err.nosuchnick u.nick ~target:n)
         end targets
 
   let quit s u params =
@@ -351,35 +362,43 @@ module Commands = struct
     raise Quit
 
   let user _ u _ =
-    raise (AlreadyRegistered)
+    u.out (Err.alreadyregistered u.nick)
 
   let topic s u = function
     | [] ->
-        raise (NeedMoreParams "TOPIC")
+        u.out (Err.needmoreparams u.nick ~cmd:"TOPIC")
     | ch :: [] ->
         let ch = tok Lexer.channel ch in
-        if not (H.mem s.channels ch) then raise (NotOnChannel ch);
-        let c = H.find s.channels ch in
-        if not (List.memq c u.joined) then raise (NotOnChannel ch);
-        u.out (Rpl.topic ?topic:c.topic u.nick ~channel:ch)
+        if H.mem s.channels ch then
+          let c = H.find s.channels ch in
+          if List.memq c u.joined then
+            u.out (Rpl.topic ?topic:c.topic u.nick ~channel:ch)
+          else
+            u.out (Err.notonchannel u.nick ~channel:ch)
+        else
+          u.out (Err.notonchannel u.nick ~channel:ch)
     | ch :: topic :: _ ->
         let ch = tok Lexer.channel ch in
         let topic = match topic with "" -> None | _ -> Some topic in
-        if not (H.mem s.channels ch) then raise (NotOnChannel ch);
-        let c = H.find s.channels ch in
-        if not (List.memq c u.joined) then raise (NotOnChannel ch);
-        c.topic <- topic; (* FIXME perms *)
-        List.iter (fun u' -> u'.out (Act.topic u ?topic ~channel:ch)) c.members
+        if H.mem s.channels ch then
+          let c = H.find s.channels ch in
+          if List.memq c u.joined then begin
+            c.topic <- topic; (* FIXME perms *)
+            List.iter (fun u' -> u'.out (Act.topic u ?topic ~channel:ch)) c.members
+          end else
+            u.out (Err.notonchannel u.nick ~channel:ch)
+        else
+          u.out (Err.notonchannel u.nick ~channel:ch)
 
   let ping s u = function
     | [] ->
-        raise (NoOrigin)
+        u.out (Err.noorigin u.nick)
     | origin :: _ ->
         u.out (Act.pong u.nick ~msg:origin)
 
   let ison s u = function
     | [] ->
-        raise (NeedMoreParams "ISON")
+        u.out (Err.needmoreparams u.nick ~cmd:"ISON")
     | nicks ->
         let nicks = List.map nickname nicks in
         let nicks = List.filter (H.mem s.users) nicks in
@@ -397,15 +416,17 @@ module Commands = struct
     | chl :: _ ->
         let chl = tok Lexer.channel_list chl in
         List.iter begin fun ch ->
-          if not (H.mem s.channels ch) then raise (NoSuchNick ch);
-          let ch = H.find s.channels ch in
-          u.out (Rpl.list u.nick ~channel:ch.name ~visible:(List.length ch.members) ?topic:ch.topic)
+          if H.mem s.channels ch then
+            let ch = H.find s.channels ch in
+            u.out (Rpl.list u.nick ~channel:ch.name ~visible:(List.length ch.members) ?topic:ch.topic)
+          else
+            u.out (Err.nosuchnick u.nick ~target:ch)
         end chl;
         u.out (Rpl.listend u.nick)
 
   let whois s u = function
     | [] ->
-        raise (NeedMoreParams "WHOIS")
+        u.out (Err.needmoreparams u.nick ~cmd:"WHOIS")
     | _ :: masks :: _
     | masks :: [] ->
         let masks = Stringext.split masks ~on:',' in
@@ -435,7 +456,10 @@ module Commands = struct
         "WHOIS",   whois ]
 
   let find name =
-    try H.find commands name with Not_found -> raise (UnknownCommand name)
+    try
+      H.find commands name
+    with
+    | Not_found -> fun _ u _ -> u.out (Err.unknowncommand u.nick ~cmd:name)
 end
 
 module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
@@ -513,33 +537,33 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         raise exn
     in
     u.last_act <- Unix.time ();
-    try
-      Commands.find m s u params
-    with
-    | NoNicknameGiven ->
-        u.out (Err.nonicknamegiven u.nick)
-    | NeedMoreParams cmd ->
-        u.out (Err.needmoreparams u.nick ~cmd)
-    | ErroneusNickname n ->
-        u.out (Err.erroneusnickname u.nick)
-    | UnknownCommand cmd ->
-        u.out (Err.unknowncommand u.nick ~cmd)
-    | NoTextToSend ->
-        u.out (Err.notexttosend u.nick)
-    | NoOrigin ->
-        u.out (Err.noorigin u.nick)
-    | NoRecipient cmd ->
-        u.out (Err.norecipient u.nick ~cmd)
-    | NotOnChannel channel ->
-        u.out (Err.notonchannel u.nick ~channel)
-    | NoSuchNick target ->
-        u.out (Err.nosuchnick u.nick ~target)
-    | NoSuchChannel channel ->
-        u.out (Err.nosuchchannel u.nick ~channel)
-    | AlreadyRegistered ->
-        u.out (Err.alreadyregistered u.nick)
-    | UserOnChannel channel ->
-        u.out (Err.useronchannel u.nick ~channel)
+    (* try *)
+    Commands.find m s u params
+    (* with *)
+    (* | NoNicknameGiven -> *)
+    (*     u.out (Err.nonicknamegiven u.nick) *)
+    (* | NeedMoreParams cmd -> *)
+    (*     u.out (Err.needmoreparams u.nick ~cmd) *)
+    (* | ErroneusNickname n -> *)
+    (*     u.out (Err.erroneusnickname u.nick) *)
+    (* | UnknownCommand cmd -> *)
+    (*     u.out (Err.unknowncommand u.nick ~cmd) *)
+    (* | NoTextToSend -> *)
+    (*     u.out (Err.notexttosend u.nick) *)
+    (* | NoOrigin -> *)
+    (*     u.out (Err.noorigin u.nick) *)
+    (* | NoRecipient cmd -> *)
+    (*     u.out (Err.norecipient u.nick ~cmd) *)
+    (* | NotOnChannel channel -> *)
+    (*     u.out (Err.notonchannel u.nick ~channel) *)
+    (* | NoSuchNick target -> *)
+    (*     u.out (Err.nosuchnick u.nick ~target) *)
+    (* | NoSuchChannel channel -> *)
+    (*     u.out (Err.nosuchchannel u.nick ~channel) *)
+    (* | AlreadyRegistered -> *)
+    (*     u.out (Err.alreadyregistered u.nick) *)
+    (* | UserOnChannel channel -> *)
+    (*     u.out (Err.useronchannel u.nick ~channel) *)
 
   let handle_quit s u ~msg =
     H.remove s.users u.nick;
