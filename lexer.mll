@@ -88,4 +88,4 @@ and mask = parse
       { let g = mask lexbuf in
         fun s i -> i < String.length s && s.[i] = c && g s (i+1) }
   | eof
-      { fun _ _ -> true }
+      { fun s i -> i >= String.length s }
