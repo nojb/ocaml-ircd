@@ -159,7 +159,7 @@ end
 
 module Err : ERR = struct
   let notregistered nick =
-    Printf.sprintf ":%s 451 %s :You have not registered\r\n" nick my_hostname
+    Printf.sprintf ":%s 451 %s :You have not registered\r\n" my_hostname nick
 
   let useronchannel nick ~channel =
     Printf.sprintf ":%s 443 %s %s :is already on channel\r\n" my_hostname nick channel
