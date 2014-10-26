@@ -374,6 +374,9 @@ module Commands = struct
         "TOPIC",   topic;
         "PING",    ping;
         "ISON",    ison ]
+
+  let find name =
+    try H.find commands name with Not_found -> raise (UnknownCommand name)
 end
 
 module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
@@ -451,8 +454,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         raise exn
     in
     try
-      let cmd = try H.find Commands.commands m with Not_found -> raise (UnknownCommand m) in
-      cmd s u params
+      Commands.find m s u params
     with
     | NoNicknameGiven ->
         u.out (Err.nonicknamegiven u.nick)
