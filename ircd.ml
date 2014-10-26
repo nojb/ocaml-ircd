@@ -396,7 +396,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
 
   let read_line io =
     lwt cs = Ch.read_line io in
-    let str = String.create (Cstruct.lenv cs) in
+    let str = Bytes.create (Cstruct.lenv cs) in
     let rec loop off = function
       | [] -> ()
       | cs :: rest ->
@@ -406,7 +406,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
     loop 0 cs;
     Lwt.return str
 
-  let handle_registration dns s inps out =
+  let handle_registration dns s ip inps out =
     let rec try_register n u =
       match n, u with
       | Some n, Some (u, r) ->
@@ -436,11 +436,10 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
       | exception _ ->
           try_register n u
     in
-    (* let addr, _ = SV4.TCPV4.get_dest (Ch.to_flow io) in *)
-    (* lwt sl = Dns.gethostbyaddr dns addr and n, u, r = try_register None None in *)
+    (* lwt sl = Dns.gethostbyaddr dns ip and n, u, r = try_register None None in *)
     lwt sl = Lwt.return [] and n, u, r = try_register None None in
     let u =
-      { nick = n; user = u; host = (match sl with n :: _ -> n | [] -> "*");
+      { nick = n; user = u; host = (match sl with n :: _ -> n | [] -> Ipaddr.V4.to_string ip);
         realname = r; joined = []; out; last_act = Unix.time () }
     in
     u.out (Rpl.welcome u.nick ~message:"Welcome to the Mirage IRC Server");
@@ -495,6 +494,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
   let handle_client dns s flow =
     let inps, inp = Lwt_stream.create () in
     let outs, out = Lwt_stream.create () in
+    let io_err, io_err_signal = let t, u = Lwt.wait () in (t >> raise_lwt IOError), u in
     let ch = Ch.create flow in
     let rec read_loop () =
       let rec loop () =
@@ -527,12 +527,11 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
           out None;
           Lwt.return_unit
     in
-    let io_err, io_err_signal = Lwt.wait () in
     let client_loop () = Lwt.pick [read_loop (); write_loop ()] >> Lwt.wrap1 Lwt.wakeup io_err_signal in
     Lwt.async client_loop;
-    lwt u = handle_registration dns s inps (fun x -> out (Some x)) in
+    lwt u = handle_registration dns s (fst (SV4.TCPV4.get_dest flow)) inps (fun x -> out (Some x)) in
     try_lwt
-      Lwt.pick [ Lwt_stream.iter (handle_message s u) inps ; io_err >> raise_lwt IOError ]
+      Lwt.pick [ Lwt_stream.iter (handle_message s u) inps ; io_err ]
     with
     | Quit ->
         SV4.TCPV4.close flow
