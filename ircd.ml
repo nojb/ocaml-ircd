@@ -114,8 +114,12 @@ module Rpl = struct
   let namereply nick ~channel ~nicks =
     let b = Buffer.create 0 in
     let rec loop nicks rest =
-      Printf.bprintf b ":%s 353 %s = %s :" my_hostname nick channel;
-      loop' nicks rest
+      match nicks with
+      | [] ->
+          rest
+      | nick :: nicks ->
+          Printf.bprintf b ":%s 353 %s = %s :%s" my_hostname nick channel nick;
+          loop' nicks rest
     and loop' nicks rest =
       match nicks with
       | nick :: nicks ->
@@ -126,7 +130,7 @@ module Rpl = struct
           end else begin
             let l = Buffer.contents b in
             Buffer.clear b;
-            l :: (match nicks with [] -> rest | _ -> loop nicks rest)
+            l :: loop nicks rest
           end
       | [] ->
           Buffer.contents b :: rest
