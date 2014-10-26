@@ -21,17 +21,6 @@
    SOFTWARE. *)
 
 exception ErroneusNickname of string
-(* exception NoNicknameGiven *)
-(* exception NeedMoreParams of string *)
-(* exception UnknownCommand of string *)
-(* exception NoTextToSend *)
-(* exception NoOrigin *)
-(* exception NoRecipient of string *)
-(* exception NotOnChannel of string *)
-(* exception NoSuchNick of string *)
-(* exception NoSuchChannel of string *)
-(* exception AlreadyRegistered *)
-(* exception UserOnChannel of string *)
 
 exception IOError
 
@@ -84,16 +73,6 @@ let motd = [ "Welcome to the Mirage IRC Server";
 
 let my_hostname =
   Unix.gethostname ()
-
-(* module type RPL = sig *)
-(*   val welcome : string -> message:string -> string *)
-(*   val motd : string -> motd:string list -> string list *)
-(*   val topic : string -> ?topic:string -> channel:string -> string *)
-(*   val namereply : string -> channel:string -> nicks:string list -> string list *)
-(*   val ison : string -> nicks:string list -> string list *)
-(*   val list : string -> channel:string -> visible:int -> ?topic:string -> string *)
-(*   val listend : string -> string *)
-(* end *)
 
 module Rpl = struct
   let welcome nick ~message =
@@ -162,24 +141,7 @@ module Rpl = struct
     Printf.sprintf "%s 318 %s :End of /WHOIS list" my_hostname nick
 end
 
-module type ERR = sig
-  val notregistered     : string -> string
-  val useronchannel     : string -> channel:string -> string
-  val notexttosend      : string -> string
-  val nonicknamegiven   : string -> string
-  val needmoreparams    : string -> cmd:string -> string
-  val erroneusnickname  : string -> string
-  val unknowncommand    : string -> cmd:string -> string
-  val nosuchnick        : string -> target:string -> string
-  val alreadyregistered : string -> string
-  val nosuchchannel     : string -> channel:string -> string
-  val notonchannel      : string -> channel:string -> string
-  val noorigin          : string -> string
-  val norecipient       : string -> cmd:string -> string
-  val nicknameinuse     : string -> nick:string -> string
-end
-
-module Err : ERR = struct
+module Err = struct
   let notregistered nick =
     Printf.sprintf ":%s 451 %s :You have not registered" my_hostname nick
 
@@ -223,17 +185,7 @@ module Err : ERR = struct
     Printf.sprintf ":%s 433 %s %s :Nickname is already in use" my_hostname n nick
 end
 
-module type ACT = sig
-  val join    : State.user -> channel:string -> string
-  val quit    : State.user -> msg:string -> string
-  val error   : msg:string -> string
-  val privmsg : State.user -> target:string -> msg:string -> string
-  val topic   : State.user -> ?topic:string -> channel:string -> string
-  val part    : State.user -> channel:string -> msg:string -> string
-  val pong    : string -> msg:string -> string
-end
-
-module Act : ACT = struct
+module Act = struct
   open State
 
   let join u ~channel =
@@ -408,8 +360,6 @@ module Commands = struct
         let nicks = List.filter (H.mem s.users) nicks in
         List.iter u.out (Rpl.ison u.nick nicks)
 
-  (* FIXME should continue processing on exception - in fact, should not use exceptions,
-     but some monadic framework ... *)
   (* FIXME handle LIST STOP *)
   let list s u = function
     | [] ->
@@ -541,33 +491,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         raise exn
     in
     u.last_act <- Unix.time ();
-    (* try *)
     Commands.find m s u params
-    (* with *)
-    (* | NoNicknameGiven -> *)
-    (*     u.out (Err.nonicknamegiven u.nick) *)
-    (* | NeedMoreParams cmd -> *)
-    (*     u.out (Err.needmoreparams u.nick ~cmd) *)
-    (* | ErroneusNickname n -> *)
-    (*     u.out (Err.erroneusnickname u.nick) *)
-    (* | UnknownCommand cmd -> *)
-    (*     u.out (Err.unknowncommand u.nick ~cmd) *)
-    (* | NoTextToSend -> *)
-    (*     u.out (Err.notexttosend u.nick) *)
-    (* | NoOrigin -> *)
-    (*     u.out (Err.noorigin u.nick) *)
-    (* | NoRecipient cmd -> *)
-    (*     u.out (Err.norecipient u.nick ~cmd) *)
-    (* | NotOnChannel channel -> *)
-    (*     u.out (Err.notonchannel u.nick ~channel) *)
-    (* | NoSuchNick target -> *)
-    (*     u.out (Err.nosuchnick u.nick ~target) *)
-    (* | NoSuchChannel channel -> *)
-    (*     u.out (Err.nosuchchannel u.nick ~channel) *)
-    (* | AlreadyRegistered -> *)
-    (*     u.out (Err.alreadyregistered u.nick) *)
-    (* | UserOnChannel channel -> *)
-    (*     u.out (Err.useronchannel u.nick ~channel) *)
 
   let handle_quit s u ~msg =
     H.remove s.users u.nick;
