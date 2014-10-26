@@ -85,17 +85,17 @@ let motd = [ "Welcome to the Mirage IRC Server";
 let my_hostname =
   Unix.gethostname ()
 
-module type RPL = sig
-  val welcome : string -> message:string -> string
-  val motd : string -> motd:string list -> string list
-  val topic : string -> ?topic:string -> channel:string -> string
-  val namereply : string -> channel:string -> nicks:string list -> string list
-  val ison : string -> nicks:string list -> string list
-  val list : string -> channel:string -> visible:int -> ?topic:string -> string
-  val listend : string -> string
-end
+(* module type RPL = sig *)
+(*   val welcome : string -> message:string -> string *)
+(*   val motd : string -> motd:string list -> string list *)
+(*   val topic : string -> ?topic:string -> channel:string -> string *)
+(*   val namereply : string -> channel:string -> nicks:string list -> string list *)
+(*   val ison : string -> nicks:string list -> string list *)
+(*   val list : string -> channel:string -> visible:int -> ?topic:string -> string *)
+(*   val listend : string -> string *)
+(* end *)
 
-module Rpl : RPL = struct
+module Rpl = struct
   let welcome nick ~message =
     Printf.sprintf ":%s 001 %s :%s" my_hostname nick message
 
@@ -144,6 +144,18 @@ module Rpl : RPL = struct
 
   let listend nick =
     Printf.sprintf "%s 323 %s :End of /LIST" my_hostname nick
+
+  let whoisuser n ~nick ~user ~host ~realname =
+    Printf.sprintf "%s 311 %s %s %s %s * :%s" my_hostname n nick user host realname
+
+  let whoisidle n ~nick ~idle =
+    Printf.sprintf "%s 317 %s %s %.0f :seconds idle" my_hostname n nick idle
+
+  let whoischannels n ~nick ~channels =
+    Printf.sprintf "%s 319 %s %s :%s" my_hostname n nick (String.concat " " channels)
+
+  let endofwhois nick =
+    Printf.sprintf "%s 318 %s :End of /WHOIS list" my_hostname nick
 end
 
 module type ERR = sig
@@ -391,6 +403,22 @@ module Commands = struct
         end chl;
         u.out (Rpl.listend u.nick)
 
+  let whois s u = function
+    | [] ->
+        raise (NeedMoreParams "WHOIS")
+    | _ :: masks :: _
+    | masks :: [] ->
+        let masks = Stringext.split masks ~on:',' in
+        let masks = List.map (fun m s -> Lexer.mask (Lexing.from_string m) s 0) masks in
+        H.iter begin fun _ u' ->
+          if List.exists (fun m -> m u'.nick) masks then begin
+            u.out (Rpl.whoisuser u.nick ~nick:u'.nick ~user:u'.user ~host:u'.host ~realname:u'.realname);
+            u.out (Rpl.whoisidle u.nick ~nick:u'.nick ~idle:(Unix.time () -. u'.last_act));
+            u.out (Rpl.whoischannels u.nick ~nick:u'.nick ~channels:(List.map (fun ch -> ch.name) u.joined))
+          end
+        end s.users;
+        u.out (Rpl.endofwhois u.nick)
+
   let commands : (State.server -> State.user -> string list -> unit) H.t = H.create 0
 
   let _ =
@@ -403,7 +431,8 @@ module Commands = struct
         "TOPIC",   topic;
         "PING",    ping;
         "ISON",    ison;
-        "LIST",    list ]
+        "LIST",    list;
+        "WHOIS",   whois ]
 
   let find name =
     try H.find commands name with Not_found -> raise (UnknownCommand name)
