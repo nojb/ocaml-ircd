@@ -512,6 +512,7 @@ module Main (Con : V1_LWT.CONSOLE) (SV4 : V1_LWT.STACKV4) = struct
         log "Error while parsing: %s (%s)" l (Printexc.to_string exn);
         raise exn
     in
+    u.last_act <- Unix.time ();
     try
       Commands.find m s u params
     with
